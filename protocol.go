@@ -101,26 +101,9 @@ func (h *BDCHeader) Parse(buf []byte) {
 	h.DataOffset = buf[3]
 }
 
-// EventHeader wraps async events from the firmware.
-type EventHeader struct {
-	Subtype uint16
-	Length  uint16
-	Version uint8
-	OUI     [3]uint8
-	UserSubtype uint16
-}
-
+// eventHeaderSize is the size of the BCM event header that precedes
+// the EventMessage. We skip past it without parsing.
 const eventHeaderSize = 10
-
-func (h *EventHeader) Parse(buf []byte) {
-	h.Subtype = binary.LittleEndian.Uint16(buf[0:2])
-	h.Length = binary.LittleEndian.Uint16(buf[2:4])
-	h.Version = buf[4]
-	h.OUI[0] = buf[5]
-	h.OUI[1] = buf[6]
-	h.OUI[2] = buf[7]
-	h.UserSubtype = binary.LittleEndian.Uint16(buf[8:10])
-}
 
 // EventMessage contains the event details (48 bytes).
 type EventMessage struct {

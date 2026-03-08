@@ -22,9 +22,10 @@ type JoinOptions struct {
 	Passphrase string
 }
 
-// Join connects to a WiFi network.
-// Blocks until connected or timeout.
-func (d *Device) Join(ssid string, opts JoinOptions) error {
+// StartJoin sends the WiFi join ioctls and returns immediately without
+// waiting for the link to come up. Use Device.IsLinkUp() to poll for
+// connection status. This is the non-blocking variant of Join.
+func (d *Device) StartJoin(ssid string, opts JoinOptions) error {
 	// Reset connection state
 	d.joinOK = false
 	d.authOK = false
@@ -33,43 +34,35 @@ func (d *Device) Join(ssid string, opts JoinOptions) error {
 
 	// Set infrastructure mode
 	if err := d.setIoctl32(wlcSetInfra, 0, 1); err != nil {
-		println("  [join] 1:infra failed")
 		return err
 	}
 	if err := d.setIoctl32(wlcSetAuth, 0, 0); err != nil {
-		println("  [join] 2:auth failed")
 		return err
 	}
 
 	wsec, wpaAuth := authToWSec(opts.Auth)
 	if err := d.setIoctl32(wlcSetWSec, 0, wsec); err != nil {
-		println("  [join] 3:wsec failed")
 		return err
 	}
 
 	if opts.Auth != AuthOpen {
 		if err := d.setBsscfgIovar32("sup_wpa", 0, 1); err != nil {
-			println("  [join] 4:sup_wpa failed")
 			return err
 		}
 		if err := d.setBsscfgIovar32("sup_wpa2_eapver", 0, 0xFFFFFFFF); err != nil {
-			println("  [join] 5:sup_wpa2_eapver failed")
 			return err
 		}
 		if err := d.setBsscfgIovar32("sup_wpa_tmo", 0, 2500); err != nil {
-			println("  [join] 6:sup_wpa_tmo failed")
 			return err
 		}
 	}
 
 	if err := d.setIoctl32(wlcSetWPAAuth, 0, wpaAuth); err != nil {
-		println("  [join] 7:wpa_auth failed")
 		return err
 	}
 
 	if opts.Auth != AuthOpen && opts.Passphrase != "" {
 		if err := d.setPassphrase(opts.Passphrase); err != nil {
-			println("  [join] 8:passphrase failed")
 			return err
 		}
 	}
@@ -77,12 +70,14 @@ func (d *Device) Join(ssid string, opts JoinOptions) error {
 	var ssidBuf [36]byte
 	binary.LittleEndian.PutUint32(ssidBuf[:4], uint32(len(ssid)))
 	copy(ssidBuf[4:], ssid)
-	if err := d.doIoctl(ioctlSET, wlcSetSSID, 0, ssidBuf[:4+len(ssid)]); err != nil {
-		println("  [join] 9:ssid failed")
+	return d.doIoctl(ioctlSET, wlcSetSSID, 0, ssidBuf[:4+len(ssid)])
+}
+
+// Join connects to a WiFi network. Blocks until connected or timeout.
+func (d *Device) Join(ssid string, opts JoinOptions) error {
+	if err := d.StartJoin(ssid, opts); err != nil {
 		return err
 	}
-
-	// Wait for connection
 	return d.waitForLink(15 * time.Second)
 }
 
@@ -179,12 +174,25 @@ func (d *Device) setIoctl32(cmd uint32, iface uint32, val uint32) error {
 }
 
 // setBsscfgIovar32 sets a bsscfg iovar with a uint32 value.
-// bsscfg iovars expect: 4-byte bsscfg index + 4-byte value.
+// Builds "bsscfg:<name>\0" + index(4) + value(4) directly in _iovarBuf
+// to avoid string concatenation allocation.
 func (d *Device) setBsscfgIovar32(name string, bsscfgIdx uint32, val uint32) error {
-	var buf [8]byte
-	binary.LittleEndian.PutUint32(buf[:4], bsscfgIdx)
-	binary.LittleEndian.PutUint32(buf[4:], val)
-	return d.setIovar("bsscfg:"+name, buf[:])
+	buf := d.iovarBytes()
+	n := copy(buf, "bsscfg:")
+	n += copy(buf[n:], name)
+	buf[n] = 0
+	n++
+	buf[n] = byte(bsscfgIdx)
+	buf[n+1] = byte(bsscfgIdx >> 8)
+	buf[n+2] = byte(bsscfgIdx >> 16)
+	buf[n+3] = byte(bsscfgIdx >> 24)
+	n += 4
+	buf[n] = byte(val)
+	buf[n+1] = byte(val >> 8)
+	buf[n+2] = byte(val >> 16)
+	buf[n+3] = byte(val >> 24)
+	n += 4
+	return d.doIoctl(ioctlSET, wlcSetVar, 0, buf[:n])
 }
 
 // GPIOSet sets a CYW43439 wireless GPIO pin.

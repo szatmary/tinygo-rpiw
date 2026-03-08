@@ -10,7 +10,6 @@ var (
 	errConnRefused    = errors.New("stack: connection refused")
 	errTimeout        = errors.New("stack: timeout")
 	errClosed         = errors.New("stack: connection closed")
-	errAddrInUse      = errors.New("stack: address in use")
 	errNoRoute        = errors.New("stack: no route to host")
 	errDNSFailed      = errors.New("stack: DNS resolution failed")
 	errDHCPFailed     = errors.New("stack: DHCP failed")

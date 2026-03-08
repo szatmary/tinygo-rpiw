@@ -16,10 +16,10 @@ const (
 	sockClosed     = 6
 )
 
-// Protocol constants
+// Protocol constants (IP protocol numbers, shared with ipv4.go)
 const (
-	protoTCP = 6
-	protoUDP = 17
+	protoTCP = ipProtoTCP
+	protoUDP = ipProtoUDP
 )
 
 // Socket represents a network socket with pre-allocated buffers.
@@ -56,7 +56,6 @@ type tcpState struct {
 	ackNum    uint32
 	sndUna    uint32 // oldest unACKed sequence number
 	remoteWin uint16
-	localWin  uint16
 	mss       uint16
 	retxTime  time.Time
 	retxCount uint8

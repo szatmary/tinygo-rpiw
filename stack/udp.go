@@ -24,6 +24,11 @@ func (s *Stack) handleUDP(srcIP, _ netip.Addr, payload []byte) {
 		return
 	}
 
+	if s.ntp.active && srcPort == ntpPort {
+		s.ntp.handleResponse(data)
+		return
+	}
+
 	// Dispatch to socket
 	for i := range s.sockets {
 		sock := &s.sockets[i]

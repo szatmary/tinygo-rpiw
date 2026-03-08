@@ -65,6 +65,9 @@ type Stack struct {
 	// DNS state
 	dns dnsResolver
 
+	// NTP state
+	ntp ntpClient
+
 	// ICMP ping state
 	pingRecvd bool
 
@@ -89,6 +92,7 @@ func New(dev NetIF) *Stack {
 	}
 	s.dhcp.init(s)
 	s.dns.init(s)
+	s.ntp.init(s)
 	return s
 }
 
@@ -118,7 +122,7 @@ func (s *Stack) HandleEth(frame []byte) {
 	case ethTypeARP:
 		s.handleARP(frame)
 	case ethTypeIPv4:
-		s.handleIPv4(payload, frame[:ethHeaderSize])
+		s.handleIPv4(payload)
 	}
 }
 

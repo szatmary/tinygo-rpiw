@@ -7,7 +7,6 @@ import (
 )
 
 var (
-	errInitFailed    = errors.New("cyw43: init failed")
 	errTimeout       = errors.New("cyw43: timeout")
 	errFirmware      = errors.New("cyw43: firmware load failed")
 	errNotReady      = errors.New("cyw43: not ready")
@@ -19,10 +18,8 @@ var (
 
 // Device represents a CYW43439 WiFi chip.
 type Device struct {
-	pwr outputPin
 	spi spiBus
 
-	lastStatusGet time.Time
 	backplaneWindow uint32
 	ioctlID       uint16
 	sdpcmSeq      uint8
@@ -96,18 +93,8 @@ func (d *Device) bp_read8(addr uint32) (uint8, error) {
 func (d *Device) bp_write8(addr uint32, val uint8) error {
 	return d.backplane_writen(addr, uint32(val), 1)
 }
-func (d *Device) bp_read32(addr uint32) (uint32, error) {
-	return d.backplane_readn(addr, 4)
-}
 func (d *Device) bp_write32(addr, val uint32) error {
 	return d.backplane_writen(addr, val, 4)
-}
-func (d *Device) bp_read16(addr uint32) (uint16, error) {
-	v, err := d.backplane_readn(addr, 2)
-	return uint16(v), err
-}
-func (d *Device) bp_write16(addr uint32, val uint16) error {
-	return d.backplane_writen(addr, uint32(val), 2)
 }
 
 func (d *Device) backplane_readn(addr, size uint32) (uint32, error) {
@@ -139,37 +126,6 @@ func (d *Device) backplane_writen(addr, val, size uint32) error {
 	return d.writen(FuncBackplane, localAddr, val, size)
 }
 
-// bp_write writes bulk data to the backplane.
-func (d *Device) bp_write(addr uint32, data []byte) error {
-	const maxTxSize = 64 // BUS_SPI_MAX_BACKPLANE_TRANSFER_SIZE
-	buf := d._iovarBuf[:maxTxSize/4+1]
-	buf8 := (*[2048]byte)(unsafe.Pointer(&buf[0]))
-
-	for len(data) > 0 {
-		windowOffset := addr & backplaneAddrMask
-		windowRemaining := uint32(0x8000) - windowOffset
-		length := uint32(len(data))
-		if length > maxTxSize {
-			length = maxTxSize
-		}
-		if length > windowRemaining {
-			length = windowRemaining
-		}
-		copy(buf8[:length], data[:length])
-
-		err := d.backplane_setwindow(addr)
-		if err != nil {
-			return err
-		}
-		cmd := cmd_word(true, true, FuncBackplane, windowOffset, length)
-		d.spi.cmd_write(cmd, buf[:(length+3)/4+1])
-
-		addr += length
-		data = data[length:]
-	}
-	return nil
-}
-
 // bp_writestring writes string data (in flash) to backplane without heap allocation.
 func (d *Device) bp_writestring(addr uint32, data string) error {
 	const maxTxSize = 64
@@ -195,40 +151,6 @@ func (d *Device) bp_writestring(addr uint32, data string) error {
 		cmd := cmd_word(true, true, FuncBackplane, windowOffset, length)
 		d.spi.cmd_write(cmd, buf[:(length+3)/4+1])
 
-		addr += length
-		data = data[length:]
-	}
-	return nil
-}
-
-// bp_read reads bulk data from the backplane.
-func (d *Device) bp_read(addr uint32, data []byte) error {
-	const maxTxSize = 64
-	alignedLen := (uint32(len(data)) + 3) &^ 3
-	data = data[:alignedLen]
-	var buf [maxTxSize/4 + 1]uint32
-	buf8 := (*[maxTxSize + 4]byte)(unsafe.Pointer(&buf[0]))
-
-	for len(data) > 0 {
-		windowOffset := addr & backplaneAddrMask
-		windowRemaining := uint32(0x8000) - windowOffset
-		length := uint32(len(data))
-		if length > maxTxSize {
-			length = maxTxSize
-		}
-		if length > windowRemaining {
-			length = windowRemaining
-		}
-
-		err := d.backplane_setwindow(addr)
-		if err != nil {
-			return err
-		}
-		cmd := cmd_word(false, true, FuncBackplane, windowOffset, length)
-		d.spi.cmd_read(cmd, buf[:(length+3)/4+1])
-
-		// Skip first word (response delay padding)
-		copy(data[:length], buf8[4:4+length])
 		addr += length
 		data = data[length:]
 	}
@@ -302,13 +224,11 @@ func (d *Device) wlan_read(buf []uint32, lenInBytes int) error {
 	cmd := cmd_word(false, true, FuncWLAN, 0, uint32(lenInBytes))
 	lenU32 := (lenInBytes + 3) / 4
 	_, err := d.spi.cmd_read(cmd, buf[:lenU32])
-	d.lastStatusGet = time.Now()
 	return err
 }
 
 func (d *Device) wlan_write(data []uint32, plen uint32) error {
 	cmd := cmd_word(true, true, FuncWLAN, 0, plen)
 	_, err := d.spi.cmd_write(cmd, data)
-	d.lastStatusGet = time.Now()
 	return err
 }

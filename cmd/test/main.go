@@ -25,27 +25,30 @@ func main() {
 	// Do NOT configure it as an LED output. The Pico W user LED is
 	// controlled via CYW43439 GPIO0, only available after WiFi init.
 
-	// Wait for USB serial
-	for !machine.Serial.DTR() {
-		time.Sleep(50 * time.Millisecond)
-	}
-	time.Sleep(500 * time.Millisecond)
+	// Give USB serial a moment to enumerate, but don't block on DTR
+	time.Sleep(2 * time.Second)
 
 	println("=== CYW43439 WiFi Test ===")
 
-	// Auto-run: init + join
+	// Init and enable auto-connect
 	println("[auto] Running init...")
 	cmdInit()
 	if dev != nil {
-		println("[auto] Running join...")
-		cmdJoin(wifiSSID, wifiPass)
-		if dev.IsLinkUp() {
-			println("[auto] Running DHCP...")
-			cmdDHCP()
-			// Test connectivity immediately
-			println("[auto] Pinging gateway...")
-			cmdPing("192.168.0.1")
-		}
+		nd.SetStatusHandler(func(e wifi.Event) {
+			switch e {
+			case wifi.EventLinkUp:
+				println("[status] WiFi link up")
+			case wifi.EventLinkDown:
+				println("[status] WiFi link down — reconnecting...")
+			case wifi.EventIPAcquired:
+				ip, _ := nd.Addr()
+				fmt.Printf("[status] IP acquired: %s\n", ip)
+			}
+		})
+		nd.EnableAutoConnect(wifiSSID, wifi.JoinOptions{
+			Auth:       wifi.AuthWPA2PSK,
+			Passphrase: wifiPass,
+		})
 	}
 
 	println("Type 'help' for commands")
@@ -121,6 +124,7 @@ func handleCommand(line string) {
 		println("  dhcp           - Get IP via DHCP")
 		println("  ip             - Show IP address")
 		println("  httpget HOST [PATH] - HTTP GET request")
+		println("  ntp [SERVER]   - Sync time via NTP")
 		println("  disconnect     - Disconnect WiFi")
 		println("  uptime         - Show uptime")
 	case "bustest":
@@ -151,6 +155,12 @@ func handleCommand(line string) {
 			path = parts[2]
 		}
 		cmdHTTPGet(parts[1], path)
+	case "ntp":
+		server := "pool.ntp.org"
+		if len(parts) >= 2 {
+			server = parts[1]
+		}
+		cmdNTP(server)
 	case "ping":
 		if len(parts) < 2 {
 			println("Usage: ping <ip>")
@@ -340,6 +350,32 @@ func cmdHTTPGet(host, path string) {
 	println()
 	nd.Close(fd)
 	println("[http] Done")
+}
+
+func cmdNTP(server string) {
+	if nd == nil {
+		println("Run init/join/dhcp first")
+		return
+	}
+	if !dev.IsLinkUp() {
+		println("WiFi not connected")
+		return
+	}
+	fmt.Printf("[ntp] Resolving %s...\n", server)
+	ip, err := nd.GetHostByName(server)
+	if err != nil {
+		fmt.Printf("[ntp] DNS failed: %s\n", err.Error())
+		return
+	}
+	fmt.Printf("[ntp] Querying %s...\n", ip)
+	t, err := nd.NTPSync(ip, 5*time.Second)
+	if err != nil {
+		fmt.Printf("[ntp] ERROR: %s\n", err.Error())
+		return
+	}
+	fmt.Printf("[ntp] %d-%02d-%02d %02d:%02d:%02d UTC\n",
+		t.Year(), t.Month(), t.Day(),
+		t.Hour(), t.Minute(), t.Second())
 }
 
 func cmdPing(ipStr string) {

@@ -6,7 +6,6 @@ package tinygorpiw
 // SPI bus registers (Function 0)
 const (
 	spiBusControl     = 0x0000
-	spiStatusEnable   = 0x0002
 	spiIntRegister    = 0x0004
 	spiIntEnable      = 0x0006
 	spiStatusRegister = 0x0008
@@ -33,7 +32,6 @@ const (
 
 	spiF2Watermark               = 32
 	busSPIBackplaneReadPaddSize  = 4
-	busSPIMaxBackplaneTransfer   = 64
 )
 
 // Backplane / SDIO registers (Function 1)
@@ -70,7 +68,6 @@ const (
 
 	aiIOCtrlOffset    = 0x408
 	aiResetCtrlOffset = 0x800
-	sicfCPUHalt       = 0x0020
 	sicfFGC           = 0x0002
 	sicfClockEn       = 0x0001
 	aircReset         = 1
@@ -94,10 +91,8 @@ const (
 	ioctlSET = 2
 
 	wlcUP         = 2
-	wlcDown       = 3
 	wlcSetInfra   = 20
 	wlcSetAuth    = 22
-	wlcGetSSID    = 25
 	wlcSetSSID    = 26
 	wlcDisassoc   = 52
 	wlcGetVar     = 262

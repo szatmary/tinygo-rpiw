@@ -12,7 +12,7 @@ const (
 )
 
 // handleIPv4 processes an incoming IPv4 packet.
-func (s *Stack) handleIPv4(pkt []byte, _ []byte) {
+func (s *Stack) handleIPv4(pkt []byte) {
 	if len(pkt) < ipv4HeaderSize {
 		return
 	}

@@ -34,6 +34,10 @@ func (d *dnsResolver) Resolve(name string, timeout time.Duration) (netip.Addr, e
 	// Build DNS query into a fixed buffer (queries are small)
 	var queryBuf [128]byte
 	queryLen := d.buildQuery(name, queryBuf[:])
+	if queryLen == 0 {
+		d.active = false
+		return netip.Addr{}, errDNSFailed
+	}
 
 	// Try up to 2 times (initial + 1 retry)
 	for attempt := range 2 {
@@ -118,8 +122,13 @@ func (d *dnsResolver) handleResponse(data []byte) {
 }
 
 // buildQuery writes a DNS query into buf and returns the length written.
+// Returns 0 if the name is too long for the buffer.
 // No allocations.
 func (d *dnsResolver) buildQuery(name string, buf []byte) int {
+	// header(12) + name + label-overhead(2) + null(1) + type/class(4) = 19
+	if len(name)+19 > len(buf) {
+		return 0
+	}
 	i := 0
 
 	// Header (12 bytes)

@@ -16,6 +16,7 @@ stack and exposes standard Go networking via TinyGo's `Netdever` interface.
 - [x] DNS resolution (A records)
 - [x] TCP connect, send, receive (full state machine)
 - [x] HTTP GET (end-to-end verified: DNS → TCP → HTTP)
+- [x] NTP time synchronization (SNTP client)
 - [x] LED control via CYW43439 GPIO0
 - [ ] TinyGo Netdever registration (`netdev.UseNetdev`)
 - [ ] RP2350 testing
@@ -120,6 +121,7 @@ Backplane reads require +1 padding word for response delay.
 | `stack/tcp.go` | TCP state machine, retransmit, MSS negotiation |
 | `stack/dhcp.go` | DHCP client (discover/offer/request/ack) |
 | `stack/dns.go` | DNS A record resolver |
+| `stack/ntp.go` | SNTP client (time sync) |
 | `stack/socket.go` | Socket struct, ring buffers (2KB rx + 2KB tx), states |
 | `stack/api.go` | Public API: Socket, Connect, Send, Recv, Close, Listen, Accept |
 | `stack/errors.go` | Error definitions |
@@ -175,10 +177,11 @@ Designed for ~200KB RAM (RP2040):
 | ARP | 16-entry table, 5-min TTL, blocking resolve with 2s timeout and retries |
 | IPv4 | Parse, send, header checksum, fragment-free |
 | ICMP | Echo request/reply (ping) |
-| UDP | Send/receive, port dispatch to DHCP/DNS/sockets |
+| UDP | Send/receive, port dispatch to DHCP/DNS/NTP/sockets |
 | TCP | Full state machine (SYN/FIN/RST), MSS negotiation, retransmit with exponential backoff, 8 concurrent sockets |
 | DHCP | Client: discover → offer → request → ack, lease renewal, gateway ARP preload |
 | DNS | A record resolver, blocking with timeout and one retry |
+| NTP | SNTP client, blocking query with timeout |
 
 ### Key Design Decisions
 
@@ -202,6 +205,7 @@ Designed for ~200KB RAM (RP2040):
 | `ip` | Show IP address |
 | `ping IP` | Send ICMP echo request |
 | `httpget HOST [PATH]` | HTTP GET request (DNS + TCP) |
+| `ntp [SERVER]` | Sync time via NTP (default: pool.ntp.org) |
 | `disconnect` | Disconnect WiFi |
 | `uptime` | Show uptime |
 

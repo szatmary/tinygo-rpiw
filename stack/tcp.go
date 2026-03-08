@@ -102,8 +102,9 @@ func (s *Stack) tcpInput(sock *Socket,
 			tcp.ackNum += uint32(n)
 			s.sendTCPFlags(sock, tcpACK)
 		}
-		if flags&tcpFIN != 0 {
-			tcp.ackNum = seqNum + uint32(len(data)) + 1
+		// Only process FIN if segment is in sequence (all prior data received)
+		if flags&tcpFIN != 0 && seqNum+uint32(len(data)) == tcp.ackNum {
+			tcp.ackNum++
 			tcp.finRecvd = true
 			tcp.state = tcpCloseWait
 			s.sendTCPFlags(sock, tcpACK)

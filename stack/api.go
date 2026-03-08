@@ -18,7 +18,6 @@ func (s *Stack) Socket(stype int) (int, error) {
 	case 1: // SOCK_STREAM
 		sock.protocol = protoTCP
 		sock.tcp.state = tcpClosed
-		sock.tcp.localWin = RxBufSize
 		sock.tcp.mss = tcpMaxSegSize
 	case 2: // SOCK_DGRAM
 		sock.protocol = protoUDP
@@ -230,6 +229,11 @@ func (s *Stack) DHCPStart() error {
 	return s.dhcp.Start()
 }
 
+// DHCPBound returns true if DHCP has obtained an IP address.
+func (s *Stack) DHCPBound() bool {
+	return s.dhcp.IsBound()
+}
+
 // WaitDHCP blocks until DHCP is bound or timeout.
 func (s *Stack) WaitDHCP(timeout time.Duration) error {
 	deadline := s.now().Add(timeout)
@@ -252,4 +256,9 @@ func (s *Stack) DNSResolve(name string, timeout time.Duration) (netip.Addr, erro
 		return addr, nil
 	}
 	return s.dns.Resolve(name, timeout)
+}
+
+// NTPSync queries an NTP server and returns the current wall-clock time.
+func (s *Stack) NTPSync(server netip.Addr, timeout time.Duration) (time.Time, error) {
+	return s.ntp.Sync(server, timeout)
 }

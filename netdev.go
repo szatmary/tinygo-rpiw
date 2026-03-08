@@ -14,11 +14,38 @@ const (
 	SOCK_DGRAM  = 2
 )
 
+// Event represents a network status change.
+type Event uint8
+
+const (
+	EventLinkUp     Event = 1 // WiFi link established
+	EventLinkDown   Event = 2 // WiFi link lost
+	EventIPAcquired Event = 3 // IP address obtained via DHCP
+)
+
+// Connection state machine states.
+type connState uint8
+
+const (
+	connIdle    connState = 0 // not connected, waiting to retry
+	connJoining connState = 1 // StartJoin sent, waiting for link
+	connDHCP    connState = 2 // DHCP started, waiting for bound
+	connUp      connState = 3 // fully connected
+)
+
 // NetDev implements the TinyGo Netdever interface, bridging the
 // CYW43439 driver and TCP/IP stack to standard Go networking.
 type NetDev struct {
 	dev   *Device
 	stack *stack.Stack
+
+	statusFn     func(Event)
+	autoSSID     string
+	autoOpts     JoinOptions
+	autoConn     bool
+	connSt       connState
+	connDeadline time.Time // timeout for current phase
+	connRetry    time.Time // backoff before next attempt
 }
 
 // NewNetDev creates a new NetDev wrapping the given Device.
@@ -113,7 +140,110 @@ func (nd *NetDev) WaitDHCP(timeout time.Duration) error {
 	return nd.stack.WaitDHCP(timeout)
 }
 
+// NTPSync queries an NTP server and returns the current wall-clock time.
+func (nd *NetDev) NTPSync(server netip.Addr, timeout time.Duration) (time.Time, error) {
+	return nd.stack.NTPSync(server, timeout)
+}
+
+// SetStatusHandler registers a callback for network status changes.
+func (nd *NetDev) SetStatusHandler(fn func(Event)) {
+	nd.statusFn = fn
+}
+
+// EnableAutoConnect enables non-blocking automatic WiFi connection with
+// infinite retries. Poll advances the connection state machine one step
+// at a time — it never blocks. On link loss, reconnection starts
+// automatically on the next Poll call.
+func (nd *NetDev) EnableAutoConnect(ssid string, opts JoinOptions) {
+	nd.autoSSID = ssid
+	nd.autoOpts = opts
+	nd.autoConn = true
+	if nd.dev.IsLinkUp() {
+		nd.connSt = connUp
+	}
+}
+
+// Connected returns true if WiFi is associated and DHCP is bound.
+func (nd *NetDev) Connected() bool {
+	return nd.connSt == connUp
+}
+
 // Poll drives the network stack. Must be called regularly.
+// When auto-connect is enabled, Poll also advances the non-blocking
+// connection state machine (join → DHCP → connected).
 func (nd *NetDev) Poll() error {
-	return nd.stack.Poll()
+	err := nd.stack.Poll()
+
+	if nd.autoConn {
+		nd.maintainConnection()
+	}
+
+	return err
+}
+
+func (nd *NetDev) notify(e Event) {
+	if nd.statusFn != nil {
+		nd.statusFn(e)
+	}
+}
+
+// maintainConnection is a non-blocking state machine that keeps
+// WiFi connected. Each call does at most one quick state check or
+// action — it never blocks.
+func (nd *NetDev) maintainConnection() {
+	now := time.Now()
+
+	switch nd.connSt {
+	case connIdle:
+		// Backoff before retrying
+		if !nd.connRetry.IsZero() && now.Before(nd.connRetry) {
+			return
+		}
+		if err := nd.dev.StartJoin(nd.autoSSID, nd.autoOpts); err != nil {
+			// Ioctl setup failed, retry after backoff
+			nd.connRetry = now.Add(5 * time.Second)
+			return
+		}
+		nd.connSt = connJoining
+		nd.connDeadline = now.Add(15 * time.Second)
+		nd.connRetry = time.Time{}
+
+	case connJoining:
+		if nd.dev.IsLinkUp() {
+			nd.connSt = connDHCP
+			nd.notify(EventLinkUp)
+			nd.stack.DHCPStart()
+			nd.connDeadline = now.Add(15 * time.Second)
+			return
+		}
+		if now.After(nd.connDeadline) {
+			// Join timed out, retry after backoff
+			nd.connSt = connIdle
+			nd.connRetry = now.Add(5 * time.Second)
+		}
+
+	case connDHCP:
+		if !nd.dev.IsLinkUp() {
+			// Link dropped during DHCP
+			nd.connSt = connIdle
+			nd.notify(EventLinkDown)
+			return
+		}
+		if nd.stack.DHCPBound() {
+			nd.connSt = connUp
+			nd.notify(EventIPAcquired)
+			return
+		}
+		if now.After(nd.connDeadline) {
+			// DHCP timed out, restart it
+			nd.stack.DHCPStart()
+			nd.connDeadline = now.Add(15 * time.Second)
+		}
+
+	case connUp:
+		if !nd.dev.IsLinkUp() {
+			nd.connSt = connIdle
+			nd.notify(EventLinkDown)
+		}
+	}
 }

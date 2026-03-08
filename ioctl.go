@@ -76,20 +76,14 @@ func (d *Device) doIoctlGet(kind uint32, cmd uint32, iface uint32, data []byte) 
 	return d.waitIoctlResponse(id, 2*time.Second)
 }
 
-// getIoctl sends a GET ioctl and returns response data.
-func (d *Device) getIoctl(cmd uint32, iface uint32, respLen int) ([]byte, error) {
-	buf := make([]byte, respLen)
-	return d.doIoctlGet(ioctlGET, cmd, iface, buf)
-}
-
-// setIovar sets an iovar by name.
+// setIovar sets an iovar by name. Uses _iovarBuf as scratch (zero allocations).
 func (d *Device) setIovar(name string, data []byte) error {
-	// iovar format: null-terminated name + data
-	payload := make([]byte, len(name)+1+len(data))
-	copy(payload, name)
-	payload[len(name)] = 0
-	copy(payload[len(name)+1:], data)
-	return d.doIoctl(ioctlSET, wlcSetVar, 0, payload)
+	buf := d.iovarBytes()
+	n := copy(buf, name)
+	buf[n] = 0
+	n++
+	copy(buf[n:], data)
+	return d.doIoctl(ioctlSET, wlcSetVar, 0, buf[:n+len(data)])
 }
 
 // setIovarU32 sets an iovar with a uint32 value.
@@ -102,12 +96,21 @@ func (d *Device) setIovarU32(name string, val uint32) error {
 	return d.setIovar(name, buf[:])
 }
 
-// getIovar gets an iovar by name.
+// getIovar gets an iovar by name. Uses _iovarBuf as scratch (zero allocations).
 func (d *Device) getIovar(name string, respLen int) ([]byte, error) {
-	payload := make([]byte, len(name)+1+respLen)
-	copy(payload, name)
-	payload[len(name)] = 0
-	return d.doIoctlGet(ioctlGET, wlcGetVar, 0, payload)
+	buf := d.iovarBytes()
+	n := copy(buf, name)
+	buf[n] = 0
+	n++
+	for i := range buf[n : n+respLen] {
+		buf[n+i] = 0
+	}
+	return d.doIoctlGet(ioctlGET, wlcGetVar, 0, buf[:n+respLen])
+}
+
+// iovarBytes returns a byte view of _iovarBuf (no allocation).
+func (d *Device) iovarBytes() []byte {
+	return unsafe.Slice((*byte)(unsafe.Pointer(&d._iovarBuf[0])), len(d._iovarBuf)*4)
 }
 
 // waitCredit waits until bus data credit is available.
@@ -237,7 +240,10 @@ func (d *Device) handleControl(payload []byte) error {
 			dataEnd = len(payload)
 		}
 		if dataEnd > dataStart {
-			d.ioctlRespBuf = payload[dataStart:dataEnd]
+			// Copy into _iovarBuf so response outlives rxBuf reuse
+			respBuf := d.iovarBytes()
+			n := copy(respBuf, payload[dataStart:dataEnd])
+			d.ioctlRespBuf = respBuf[:n]
 		}
 	}
 	return nil
@@ -264,9 +270,6 @@ func (d *Device) handleEvent(payload []byte) error {
 		return nil
 	}
 	eventData = eventData[ethHeaderLen:] // skip Ethernet header
-
-	var evtHdr EventHeader
-	evtHdr.Parse(eventData)
 
 	var evtMsg EventMessage
 	evtMsg.Parse(eventData[eventHeaderSize:])
