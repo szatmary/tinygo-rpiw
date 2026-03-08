@@ -15,16 +15,9 @@ import (
 	wifi "github.com/mszatmary/tinygorpiw"
 )
 
-var (
-	dev *wifi.Device
-	nd  *wifi.NetDev
-)
+var nd *wifi.NetDev
 
 func main() {
-	// NOTE: On Pico W, machine.LED (GPIO25) is the WiFi SPI CS pin!
-	// Do NOT configure it as an LED output. The Pico W user LED is
-	// controlled via CYW43439 GPIO0, only available after WiFi init.
-
 	// Wait for USB serial (timeout after 5s so board works without terminal)
 	deadline := time.Now().Add(5 * time.Second)
 	for !machine.Serial.DTR() && time.Now().Before(deadline) {
@@ -33,29 +26,31 @@ func main() {
 	time.Sleep(200 * time.Millisecond)
 
 	println("=== CYW43439 WiFi Test ===")
+	println("[init] Connecting...")
 
-	// Init and enable auto-connect
-	println("[auto] Running init...")
-	cmdInit()
-	if nd != nil {
-		nd.EnableAutoConnect(wifiSSID, wifi.JoinOptions{
-			Auth:       wifi.AuthWPA2PSK,
-			Passphrase: wifiPass,
-			Hostname:   "picow",
-			StatusFn: func(e wifi.Event) {
-				switch e {
-				case wifi.EventLinkUp:
-					println("[status] WiFi link up")
-				case wifi.EventLinkDown:
-					println("[status] WiFi link down — reconnecting...")
-				case wifi.EventIPAcquired:
-					ip, _ := nd.Addr()
-					fmt.Printf("[status] IP acquired: %s\n", ip)
-				}
-			},
-		})
+	var err error
+	nd, err = wifi.Connect(wifi.Config{
+		SSID:       wifiSSID,
+		Passphrase: wifiPass,
+		Hostname:   "picow",
+		StatusFn: func(e wifi.Event) {
+			switch e {
+			case wifi.EventLinkUp:
+				println("[status] WiFi link up")
+			case wifi.EventLinkDown:
+				println("[status] WiFi link down — reconnecting...")
+			case wifi.EventIPAcquired:
+				ip, _ := nd.Addr()
+				fmt.Printf("[status] IP acquired: %s\n", ip)
+			}
+		},
+	})
+	if err != nil {
+		fmt.Printf("[init] ERROR: %s\n", err.Error())
+		select {}
 	}
 
+	println("[init] Ready")
 	println("Type 'help' for commands")
 	prompt()
 
@@ -92,13 +87,9 @@ func main() {
 			}
 		}
 
-		if nd != nil {
-			nd.Poll()
-		}
-
 		// Blink LED every 500ms
 		tick++
-		if nd != nil && tick%500 == 0 {
+		if tick%500 == 0 {
 			ledOn = !ledOn
 			nd.GPIOSet(0, ledOn)
 		}
@@ -116,42 +107,22 @@ func handleCommand(line string) {
 	if len(parts) == 0 {
 		return
 	}
-	cmd := parts[0]
 
-	switch cmd {
+	switch parts[0] {
 	case "help":
 		println("Commands:")
-		println("  init           - Initialize CYW43439 chip")
-		println("  bustest        - Low-level SPI bus test")
-		println("  mac            - Show MAC address")
-		println("  join SSID PASS - Connect to WiFi (WPA2)")
-		println("  status         - Show link status")
-		println("  dhcp           - Get IP via DHCP")
 		println("  ip             - Show IP address")
 		println("  httpget HOST [PATH] - HTTP GET request")
-		println("  ntp [SERVER]   - Sync time via NTP")
 		println("  btscan         - Scan for BLE devices")
 		println("  btinfo         - Show Bluetooth status")
-		println("  disconnect     - Disconnect WiFi")
 		println("  uptime         - Show uptime")
-	case "bustest":
-		cmdBusTest()
-	case "init":
-		cmdInit()
-	case "mac":
-		cmdMAC()
-	case "join":
-		if len(parts) < 3 {
-			println("Usage: join SSID PASSPHRASE")
-			return
-		}
-		cmdJoin(parts[1], strings.Join(parts[2:], " "))
-	case "status":
-		cmdStatus()
-	case "dhcp":
-		cmdDHCP()
 	case "ip":
-		cmdIP()
+		ip, _ := nd.Addr()
+		if ip.IsValid() {
+			fmt.Printf("IP: %s\n", ip)
+		} else {
+			println("No IP yet")
+		}
 	case "httpget":
 		if len(parts) < 2 {
 			println("Usage: httpget <host> [path]")
@@ -162,176 +133,43 @@ func handleCommand(line string) {
 			path = parts[2]
 		}
 		cmdHTTPGet(parts[1], path)
-	case "ntp":
-		server := "pool.ntp.org"
-		if len(parts) >= 2 {
-			server = parts[1]
-		}
-		cmdNTP(server)
 	case "btscan":
 		cmdBTScan()
 	case "btinfo":
-		if nd == nil {
-			println("Not initialized")
-		} else {
-			n := nd.BufferedHCI()
-			fmt.Printf("BT enabled: %v, HCI buffered: %d\n", nd.BTEnabled(), n)
-		}
-	case "ping":
-		if len(parts) < 2 {
-			println("Usage: ping <ip>")
-			return
-		}
-		cmdPing(parts[1])
-	case "disconnect":
-		cmdDisconnect()
+		n := nd.BufferedHCI()
+		fmt.Printf("HCI buffered: %d\n", n)
 	case "uptime":
 		fmt.Printf("Uptime: %s\n", time.Since(bootTime))
 	default:
-		fmt.Printf("Unknown: %s\n", cmd)
+		fmt.Printf("Unknown: %s\n", parts[0])
 	}
 }
 
 var bootTime = time.Now()
 
-func cmdBusTest() {
-	println("[bustest] Testing SPI bus...")
-	d := &wifi.Device{}
-	err := d.InitBusOnly()
-	if err != nil {
-		fmt.Printf("[bustest] FAILED: %s\n", err.Error())
-	} else {
-		println("[bustest] PASSED!")
-	}
-}
-
-func cmdInit() {
-	println("[init] Starting...")
-	start := time.Now()
-
-	dev = &wifi.Device{}
-	println("[init] Calling dev.Init()...")
-	if err := dev.Init(); err != nil {
-		fmt.Printf("[init] ERROR: %s\n", err.Error())
-		dev = nil
-		return
-	}
-
-	fmt.Printf("[init] OK in %s\n", time.Since(start))
-
-	// Turn on LED (CYW43439 GPIO0 = Pico W user LED)
-	dev.GPIOSet(0, true)
-
-	nd = wifi.NewNetDev(dev)
-	println("[init] Network stack ready")
-}
-
-func cmdMAC() {
-	if nd == nil {
-		println("Run 'init' first")
-		return
-	}
-	mac := nd.HardwareAddr()
-	fmt.Printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
-}
-
-func cmdJoin(ssid, pass string) {
-	if nd == nil {
-		println("Run 'init' first")
-		return
-	}
-	fmt.Printf("[join] Connecting to '%s'...\n", ssid)
-	start := time.Now()
-
-	err := nd.Join(ssid, wifi.JoinOptions{
-		Auth:       wifi.AuthWPA2PSK,
-		Passphrase: pass,
-	})
-	if err != nil {
-		fmt.Printf("[join] ERROR: %s\n", err.Error())
-		return
-	}
-	fmt.Printf("[join] Connected in %s\n", time.Since(start))
-}
-
-func cmdStatus() {
-	if nd == nil {
-		println("Not initialized")
-		return
-	}
-	if nd.IsLinkUp() {
-		println("Link: UP")
-	} else {
-		println("Link: DOWN")
-	}
-}
-
-func cmdDHCP() {
-	if nd == nil {
-		println("Run 'init' first")
-		return
-	}
-	if !nd.IsLinkUp() {
-		println("WiFi not connected, run 'join' first")
-		return
-	}
-	println("[dhcp] Starting...")
-	if err := nd.DHCP(); err != nil {
-		fmt.Printf("[dhcp] ERROR: %s\n", err.Error())
-		return
-	}
-	println("[dhcp] Waiting for lease...")
-	if err := nd.WaitDHCP(15 * time.Second); err != nil {
-		fmt.Printf("[dhcp] ERROR: %s\n", err.Error())
-		return
-	}
-	ip, _ := nd.Addr()
-	fmt.Printf("[dhcp] IP: %s\n", ip)
-}
-
-func cmdIP() {
-	if nd == nil {
-		println("Not initialized")
-		return
-	}
-	ip, _ := nd.Addr()
-	if ip.IsValid() {
-		fmt.Printf("IP: %s\n", ip)
-	} else {
-		println("No IP (run 'dhcp')")
-	}
-}
-
 func cmdHTTPGet(host, path string) {
-	if nd == nil {
-		println("Run 'init' first")
-		return
-	}
-	if !nd.IsLinkUp() {
-		println("WiFi not connected")
+	ip, _ := nd.Addr()
+	if !ip.IsValid() {
+		println("Not connected yet")
 		return
 	}
 
-	// Resolve hostname
 	fmt.Printf("[http] Resolving %s...\n", host)
-	ip, err := nd.GetHostByName(host)
+	addr, err := nd.GetHostByName(host)
 	if err != nil {
 		fmt.Printf("[http] DNS failed: %s\n", err.Error())
 		return
 	}
-	fmt.Printf("[http] %s -> %s\n", host, ip)
+	fmt.Printf("[http] %s -> %s\n", host, addr)
 
-	// Open TCP socket
-	fd, err := nd.Socket(wifi.AF_INET, wifi.SOCK_STREAM, 0)
+	fd, err := nd.Socket(2, 1, 0) // AF_INET, SOCK_STREAM
 	if err != nil {
 		fmt.Printf("[http] Socket: %s\n", err.Error())
 		return
 	}
 
-	// Connect
-	fmt.Printf("[http] Connecting to %s:80...\n", ip)
-	err = nd.Connect(fd, host, netip.AddrPortFrom(ip, 80))
+	fmt.Printf("[http] Connecting to %s:80...\n", addr)
+	err = nd.Connect(fd, host, netip.AddrPortFrom(addr, 80))
 	if err != nil {
 		fmt.Printf("[http] Connect: %s\n", err.Error())
 		nd.Close(fd)
@@ -339,7 +177,6 @@ func cmdHTTPGet(host, path string) {
 	}
 	println("[http] Connected!")
 
-	// Send HTTP request (build in fixed buffer to avoid string concat allocation)
 	var reqBuf [256]byte
 	n := copy(reqBuf[:], "GET ")
 	n += copy(reqBuf[n:], path)
@@ -354,14 +191,13 @@ func cmdHTTPGet(host, path string) {
 		return
 	}
 
-	// Read response
 	var buf [512]byte
 	for {
-		n, err := nd.Recv(fd, buf[:], 0, deadline)
-		if n > 0 {
-			machine.Serial.Write(buf[:n])
+		rn, rerr := nd.Recv(fd, buf[:], 0, deadline)
+		if rn > 0 {
+			machine.Serial.Write(buf[:rn])
 		}
-		if err != nil {
+		if rerr != nil {
 			break
 		}
 	}
@@ -370,67 +206,7 @@ func cmdHTTPGet(host, path string) {
 	println("[http] Done")
 }
 
-func cmdNTP(server string) {
-	if nd == nil {
-		println("Run init/join/dhcp first")
-		return
-	}
-	if !nd.IsLinkUp() {
-		println("WiFi not connected")
-		return
-	}
-	fmt.Printf("[ntp] Resolving %s...\n", server)
-	ip, err := nd.GetHostByName(server)
-	if err != nil {
-		fmt.Printf("[ntp] DNS failed: %s\n", err.Error())
-		return
-	}
-	fmt.Printf("[ntp] Querying %s...\n", ip)
-	t, err := nd.NTPSync(ip, 5*time.Second)
-	if err != nil {
-		fmt.Printf("[ntp] ERROR: %s\n", err.Error())
-		return
-	}
-	fmt.Printf("[ntp] %d-%02d-%02d %02d:%02d:%02d UTC\n",
-		t.Year(), t.Month(), t.Day(),
-		t.Hour(), t.Minute(), t.Second())
-}
-
-func cmdPing(ipStr string) {
-	if nd == nil {
-		println("Run init/join/dhcp first")
-		return
-	}
-	ip, err := netip.ParseAddr(ipStr)
-	if err != nil {
-		fmt.Printf("Bad IP: %s\n", ipStr)
-		return
-	}
-	fmt.Printf("[ping] Sending to %s...\n", ip)
-	if err := nd.Ping(ip); err != nil {
-		fmt.Printf("[ping] Send error: %s\n", err.Error())
-		return
-	}
-	println("[ping] Sent, waiting for reply...")
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		nd.Poll()
-		if nd.PingResult() {
-			println("[ping] Reply received!")
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	println("[ping] Timeout - no reply")
-}
-
 func cmdBTScan() {
-	if nd == nil || !nd.BTEnabled() {
-		println("BT not initialized")
-		return
-	}
-
-	// HCI Reset
 	println("[btscan] Resetting HCI...")
 	if err := hciSendCmd(0x0C03, nil); err != nil {
 		fmt.Printf("[btscan] Reset send: %s\n", err.Error())
@@ -441,14 +217,9 @@ func cmdBTScan() {
 		return
 	}
 
-	// LE Set Scan Parameters: active scan, 60ms interval, 30ms window
 	println("[btscan] Setting scan params...")
 	scanParams := [7]byte{
-		0x01,       // active scan
-		0x60, 0x00, // interval: 96 * 0.625ms = 60ms
-		0x30, 0x00, // window: 48 * 0.625ms = 30ms
-		0x00, // own address: public
-		0x00, // filter: accept all
+		0x01, 0x60, 0x00, 0x30, 0x00, 0x00, 0x00,
 	}
 	if err := hciSendCmd(0x200B, scanParams[:]); err != nil {
 		fmt.Printf("[btscan] Params send: %s\n", err.Error())
@@ -459,9 +230,8 @@ func cmdBTScan() {
 		return
 	}
 
-	// LE Set Scan Enable
 	println("[btscan] Starting scan (10s)...")
-	scanEnable := [2]byte{0x01, 0x01} // enable, filter duplicates
+	scanEnable := [2]byte{0x01, 0x01}
 	if err := hciSendCmd(0x200C, scanEnable[:]); err != nil {
 		fmt.Printf("[btscan] Enable send: %s\n", err.Error())
 		return
@@ -471,28 +241,22 @@ func cmdBTScan() {
 		return
 	}
 
-	// Read advertising reports for 10 seconds
 	var hciBuf [256]byte
 	count := 0
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if nd != nil {
-			nd.Poll()
-		}
+	scanDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(scanDeadline) {
 		if nd.BufferedHCI() > 0 {
 			n, err := nd.ReadHCI(hciBuf[:])
 			if err != nil {
 				continue
 			}
 			if n >= 2 && hciBuf[0] == 0x04 && hciBuf[1] == 0x3E {
-				// LE Meta Event
 				parseAdvReport(hciBuf[:n], &count)
 			}
 		}
 		time.Sleep(time.Millisecond)
 	}
 
-	// Disable scan
 	scanDisable := [2]byte{0x00, 0x00}
 	hciSendCmd(0x200C, scanDisable[:])
 	hciWaitCmdComplete(0x200C, 2*time.Second)
@@ -500,10 +264,9 @@ func cmdBTScan() {
 	fmt.Printf("[btscan] Done, %d devices found\n", count)
 }
 
-// hciSendCmd sends an HCI command packet.
 func hciSendCmd(opcode uint16, params []byte) error {
 	var buf [64]byte
-	buf[0] = 0x01 // HCI command
+	buf[0] = 0x01
 	buf[1] = byte(opcode)
 	buf[2] = byte(opcode >> 8)
 	buf[3] = byte(len(params))
@@ -512,21 +275,15 @@ func hciSendCmd(opcode uint16, params []byte) error {
 	return err
 }
 
-// hciWaitCmdComplete waits for a Command Complete event matching the opcode.
 func hciWaitCmdComplete(opcode uint16, timeout time.Duration) error {
 	var buf [256]byte
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if nd != nil {
-			nd.Poll()
-		}
 		if nd.BufferedHCI() > 0 {
 			n, err := nd.ReadHCI(buf[:])
 			if err != nil {
 				continue
 			}
-			// Event packet: [0x04, event_code, param_len, ...]
-			// Command Complete: event=0x0E, params: [num_cmds, opcode_lo, opcode_hi, status]
 			if n >= 6 && buf[0] == 0x04 && buf[1] == 0x0E {
 				evtOpcode := uint16(buf[4]) | uint16(buf[5])<<8
 				if evtOpcode == opcode {
@@ -543,14 +300,11 @@ func hciWaitCmdComplete(opcode uint16, timeout time.Duration) error {
 	return fmt.Errorf("hci cmd 0x%04x timeout", opcode)
 }
 
-// parseAdvReport parses LE Advertising Report events.
 func parseAdvReport(data []byte, count *int) {
-	// data: [0x04, 0x3E, param_len, subevent, ...]
 	if len(data) < 5 {
 		return
 	}
-	subevent := data[3]
-	if subevent != 0x02 {
+	if data[3] != 0x02 {
 		return
 	}
 	numReports := int(data[4])
@@ -559,17 +313,14 @@ func parseAdvReport(data []byte, count *int) {
 		if pos+9 > len(data) {
 			break
 		}
-		// evtType := data[pos]
 		addrType := data[pos+1]
 		addr := data[pos+2 : pos+8]
 		dataLen := int(data[pos+8])
 		pos += 9
 
-		// Parse name from AD structures
 		name := ""
 		if pos+dataLen <= len(data) {
-			adData := data[pos : pos+dataLen]
-			name = parseADName(adData)
+			name = parseADName(data[pos : pos+dataLen])
 		}
 		pos += dataLen
 
@@ -594,7 +345,6 @@ func parseAdvReport(data []byte, count *int) {
 	}
 }
 
-// parseADName extracts the Complete/Short Local Name from AD structures.
 func parseADName(ad []byte) string {
 	for i := 0; i < len(ad); {
 		if i+1 >= len(ad) {
@@ -604,24 +354,10 @@ func parseADName(ad []byte) string {
 		if length == 0 || i+1+length > len(ad) {
 			break
 		}
-		adType := ad[i+1]
-		// 0x08 = Shortened Local Name, 0x09 = Complete Local Name
-		if adType == 0x08 || adType == 0x09 {
+		if ad[i+1] == 0x08 || ad[i+1] == 0x09 {
 			return string(ad[i+2 : i+1+length])
 		}
 		i += 1 + length
 	}
 	return ""
-}
-
-func cmdDisconnect() {
-	if nd == nil {
-		println("Not initialized")
-		return
-	}
-	if err := nd.Disconnect(); err != nil {
-		fmt.Printf("ERROR: %s\n", err.Error())
-		return
-	}
-	println("Disconnected")
 }

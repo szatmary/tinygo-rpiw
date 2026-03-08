@@ -17,23 +17,33 @@ const (
 	AuthWPA3SAE Auth = 3
 )
 
-// JoinOptions configures WiFi connection parameters.
-// If IP is set, static addressing is used. Otherwise DHCP runs automatically.
-type JoinOptions struct {
-	Auth       Auth
+// Event represents a network status change.
+type Event uint8
+
+const (
+	EventLinkUp     Event = 1 // WiFi link established
+	EventLinkDown   Event = 2 // WiFi link lost
+	EventIPAcquired Event = 3 // IP address obtained via DHCP
+)
+
+// Config has everything needed to connect to WiFi.
+// If Passphrase is set and Auth is zero, Auth defaults to AuthWPA2PSK.
+// If IP is unset, DHCP runs automatically.
+type Config struct {
+	SSID       string
 	Passphrase string
-	Hostname   string     // mDNS hostname (without ".local" suffix)
-	IP         netip.Addr // Static IP (if unset, DHCP is used automatically)
+	Auth       Auth
+	Hostname   string      // mDNS hostname (without ".local" suffix)
+	IP         netip.Addr  // Static IP (zero = DHCP)
 	Gateway    netip.Addr
 	Subnet     netip.Addr
 	DNS        netip.Addr
-	StatusFn   func(Event) // Called on link up/down, IP acquired
+	StatusFn   func(Event) // Connection status callback
 }
 
-// StartJoin sends the WiFi join ioctls and returns immediately without
-// waiting for the link to come up. Use Device.IsLinkUp() to poll for
-// connection status. This is the non-blocking variant of Join.
-func (d *Device) StartJoin(ssid string, opts JoinOptions) error {
+// startJoin sends the WiFi join ioctls and returns immediately without
+// waiting for the link to come up.
+func (d *Device) startJoin(cfg Config) error {
 	// Reset connection state
 	d.joinOK = false
 	d.authOK = false
@@ -48,12 +58,12 @@ func (d *Device) StartJoin(ssid string, opts JoinOptions) error {
 		return err
 	}
 
-	wsec, wpaAuth := authToWSec(opts.Auth)
+	wsec, wpaAuth := authToWSec(cfg.Auth)
 	if err := d.setIoctl32(wlcSetWSec, 0, wsec); err != nil {
 		return err
 	}
 
-	if opts.Auth != AuthOpen {
+	if cfg.Auth != AuthOpen {
 		if err := d.setBsscfgIovar32("sup_wpa", 0, 1); err != nil {
 			return err
 		}
@@ -69,33 +79,16 @@ func (d *Device) StartJoin(ssid string, opts JoinOptions) error {
 		return err
 	}
 
-	if opts.Auth != AuthOpen && opts.Passphrase != "" {
-		if err := d.setPassphrase(opts.Passphrase); err != nil {
+	if cfg.Auth != AuthOpen && cfg.Passphrase != "" {
+		if err := d.setPassphrase(cfg.Passphrase); err != nil {
 			return err
 		}
 	}
 
 	var ssidBuf [36]byte
-	binary.LittleEndian.PutUint32(ssidBuf[:4], uint32(len(ssid)))
-	copy(ssidBuf[4:], ssid)
-	return d.doIoctl(ioctlSET, wlcSetSSID, 0, ssidBuf[:4+len(ssid)])
-}
-
-// Join connects to a WiFi network. Blocks until connected or timeout.
-func (d *Device) Join(ssid string, opts JoinOptions) error {
-	if err := d.StartJoin(ssid, opts); err != nil {
-		return err
-	}
-	return d.waitForLink(15 * time.Second)
-}
-
-// Disconnect disconnects from the current network.
-func (d *Device) Disconnect() error {
-	d.linkUp = false
-	d.joinOK = false
-	d.authOK = false
-	d.keyExchangeOK = false
-	return d.doIoctl(ioctlSET, wlcDisassoc, 0, nil)
+	binary.LittleEndian.PutUint32(ssidBuf[:4], uint32(len(cfg.SSID)))
+	copy(ssidBuf[4:], cfg.SSID)
+	return d.doIoctl(ioctlSET, wlcSetSSID, 0, ssidBuf[:4+len(cfg.SSID)])
 }
 
 // setPassphrase sets the WPA/WPA2 passphrase via WLC_SET_WSEC_PMK ioctl.
@@ -106,21 +99,6 @@ func (d *Device) setPassphrase(pass string) error {
 	binary.LittleEndian.PutUint16(pmk[2:4], 1) // flags=1: WSEC_PASSPHRASE
 	copy(pmk[4:], pass)
 	return d.doIoctl(ioctlSET, wlcSetWsecPMK, 0, pmk[:])
-}
-
-// waitForLink polls events until WiFi is connected or timeout.
-func (d *Device) waitForLink(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if err := d.poll(); err != nil {
-			return err
-		}
-		if d.linkUp {
-			return nil
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return errJoinFailed
 }
 
 // SendEth sends a raw Ethernet frame over WiFi.
@@ -182,8 +160,6 @@ func (d *Device) setIoctl32(cmd uint32, iface uint32, val uint32) error {
 }
 
 // setBsscfgIovar32 sets a bsscfg iovar with a uint32 value.
-// Builds "bsscfg:<name>\0" + index(4) + value(4) directly in _iovarBuf
-// to avoid string concatenation allocation.
 func (d *Device) setBsscfgIovar32(name string, bsscfgIdx uint32, val uint32) error {
 	buf := d.iovarBytes()
 	n := copy(buf, "bsscfg:")
@@ -218,13 +194,11 @@ func (d *Device) GPIOSet(wlGPIO uint8, value bool) error {
 }
 
 // AddMulticastMAC adds a MAC address to the CYW43439 multicast filter.
-// Required for receiving multicast packets (e.g., mDNS 01:00:5E:00:00:FB).
 func (d *Device) AddMulticastMAC(mac [6]byte) error {
 	buf := d.iovarBytes()
 	n := copy(buf, "mcast_list")
 	buf[n] = 0
 	n++
-	// count = 1 (uint32 LE)
 	buf[n] = 1
 	buf[n+1] = 0
 	buf[n+2] = 0
@@ -249,4 +223,3 @@ func authToWSec(auth Auth) (wsec uint32, wpaAuth uint32) {
 		return wsecAES, wpaAuthWPA2PSK
 	}
 }
-

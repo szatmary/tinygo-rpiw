@@ -19,34 +19,37 @@ var (
 )
 
 func main() {
-	// Initialize the CYW43439
-	dev := &wifi.Device{}
-	if err := dev.Init(); err != nil {
-		panic("wifi init: " + err.Error())
+	connected := make(chan struct{}, 1)
+
+	nd, err := wifi.Connect(wifi.Config{
+		SSID:       ssid,
+		Passphrase: pass,
+		Hostname:   "picow",
+		StatusFn: func(e wifi.Event) {
+			switch e {
+			case wifi.EventIPAcquired:
+				fmt.Println("WiFi connected!")
+				connected <- struct{}{}
+			case wifi.EventLinkDown:
+				fmt.Println("WiFi link down, reconnecting...")
+			}
+		},
+	})
+	if err != nil {
+		panic("wifi: " + err.Error())
 	}
 
-	fmt.Println("WiFi initialized, connecting...")
-
-	// Create network device (thread-safe wrapper)
-	nd := wifi.NewNetDev(dev)
-
-	// Connect to WiFi (DHCP runs automatically)
-	if err := nd.Join(ssid, wifi.JoinOptions{
-		Auth:       wifi.AuthWPA2PSK,
-		Passphrase: pass,
-	}); err != nil {
-		panic("wifi join: " + err.Error())
+	// Wait for connection
+	select {
+	case <-connected:
+	case <-time.After(30 * time.Second):
+		panic("wifi: connection timeout")
 	}
 
 	ip, _ := nd.Addr()
-	mac := nd.HardwareAddr()
-	fmt.Printf("Connected! MAC: %02x:%02x:%02x:%02x:%02x:%02x IP: %s\n",
-		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], ip)
+	fmt.Println("IP:", ip)
 
-	// Register as TinyGo netdev
-	// netdev.UseNetdev(nd)
-
-	// Now standard net/http works!
+	// net/http just works
 	resp, err := http.Get("http://httpbin.org/ip")
 	if err != nil {
 		fmt.Println("HTTP error:", err)
@@ -57,9 +60,5 @@ func main() {
 	body, _ := io.ReadAll(resp.Body)
 	fmt.Println("Response:", string(body))
 
-	// Keep running
-	for {
-		nd.Poll()
-		time.Sleep(10 * time.Millisecond)
-	}
+	select {} // keep running
 }
