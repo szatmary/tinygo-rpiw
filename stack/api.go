@@ -19,7 +19,7 @@ func (s *Stack) Socket(stype int) (int, error) {
 		sock.protocol = protoTCP
 		sock.tcp.state = tcpClosed
 		sock.tcp.localWin = RxBufSize
-		sock.tcp.mss = tcpDefaultMSS
+		sock.tcp.mss = tcpMaxSegSize
 	case 2: // SOCK_DGRAM
 		sock.protocol = protoUDP
 	default:
@@ -140,7 +140,7 @@ func (s *Stack) Send(fd int, data []byte, deadline time.Time) (int, error) {
 	}
 
 	// TCP: write to tx buffer and trigger output
-	if sock.state != sockConnected && sock.tcp.state != tcpEstablished {
+	if sock.state != sockConnected {
 		return 0, errNotConnected
 	}
 

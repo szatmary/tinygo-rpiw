@@ -143,7 +143,3 @@ const (
 	evtStatusSuccess = 0
 )
 
-// Power management
-const (
-	pmPowerSave = 2
-)

@@ -318,7 +318,7 @@ func (d *Device) setEventMask() error {
 	// bsscfg:event_msgs data = 4-byte bsscfg index + event mask
 	var buf [4 + 24]byte
 	// buf[0:4] = bsscfg index 0 (zero)
-	events := []uint32{
+	events := [...]uint32{
 		evtSetSSID, evtJoin, evtAuth, evtDeauth, evtDeauthInd,
 		evtAssoc, evtDisassoc, evtDisassocInd, evtLink, evtPSKSup,
 	}

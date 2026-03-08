@@ -21,7 +21,7 @@ func (d *dnsResolver) init(s *Stack) {
 }
 
 // Resolve performs a DNS A record lookup.
-// Blocks until resolved or timeout.
+// Blocks until resolved or timeout. Retries once on timeout.
 func (d *dnsResolver) Resolve(name string, timeout time.Duration) (netip.Addr, error) {
 	if !d.stack.dnsServer.IsValid() {
 		return netip.Addr{}, errDNSFailed
@@ -31,42 +31,30 @@ func (d *dnsResolver) Resolve(name string, timeout time.Duration) (netip.Addr, e
 	d.active = true
 	d.resolved = false
 
-	// Build DNS query
-	pkt := d.buildQuery(name)
+	// Build DNS query into a fixed buffer (queries are small)
+	var queryBuf [128]byte
+	queryLen := d.buildQuery(name, queryBuf[:])
 
-	// Send query
-	if err := d.stack.sendUDP(dnsPort+1, dnsPort, d.stack.dnsServer, pkt); err != nil {
-		d.active = false
-		return netip.Addr{}, err
-	}
-
-	// Poll for response
-	deadline := d.stack.now().Add(timeout)
-	for d.stack.now().Before(deadline) {
-		if err := d.stack.Poll(); err != nil {
+	// Try up to 2 times (initial + 1 retry)
+	for attempt := range 2 {
+		_ = attempt
+		if err := d.stack.sendUDP(dnsPort+1, dnsPort, d.stack.dnsServer, queryBuf[:queryLen]); err != nil {
 			d.active = false
 			return netip.Addr{}, err
 		}
-		if d.resolved {
-			d.active = false
-			return d.result, nil
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 
-	// Retry once
-	d.stack.sendUDP(dnsPort+1, dnsPort, d.stack.dnsServer, pkt)
-	deadline = d.stack.now().Add(timeout)
-	for d.stack.now().Before(deadline) {
-		if err := d.stack.Poll(); err != nil {
-			d.active = false
-			return netip.Addr{}, err
+		deadline := d.stack.now().Add(timeout)
+		for d.stack.now().Before(deadline) {
+			if err := d.stack.Poll(); err != nil {
+				d.active = false
+				return netip.Addr{}, err
+			}
+			if d.resolved {
+				d.active = false
+				return d.result, nil
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		if d.resolved {
-			d.active = false
-			return d.result, nil
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 
 	d.active = false
@@ -78,13 +66,11 @@ func (d *dnsResolver) handleResponse(data []byte) {
 		return
 	}
 
-	// Check ID
 	id := uint16(data[0])<<8 | uint16(data[1])
 	if id != d.queryID {
 		return
 	}
 
-	// Check it's a response (QR=1) and no error (RCODE=0)
 	flags := uint16(data[2])<<8 | uint16(data[3])
 	if flags&0x8000 == 0 { // not a response
 		return
@@ -113,8 +99,6 @@ func (d *dnsResolver) handleResponse(data []byte) {
 			return
 		}
 		atype := uint16(data[offset])<<8 | uint16(data[offset+1])
-		// aclass := uint16(data[offset+2])<<8 | uint16(data[offset+3])
-		// ttl at offset+4..+7
 		rdlen := uint16(data[offset+8])<<8 | uint16(data[offset+9])
 		offset += 10
 
@@ -133,44 +117,65 @@ func (d *dnsResolver) handleResponse(data []byte) {
 	}
 }
 
-func (d *dnsResolver) buildQuery(name string) []byte {
-	// Header (12) + question
-	pkt := make([]byte, 0, 64)
+// buildQuery writes a DNS query into buf and returns the length written.
+// No allocations.
+func (d *dnsResolver) buildQuery(name string, buf []byte) int {
+	i := 0
 
-	// Header
-	pkt = append(pkt, byte(d.queryID>>8), byte(d.queryID))
-	pkt = append(pkt, 0x01, 0x00) // flags: RD=1
-	pkt = append(pkt, 0x00, 0x01) // QDCOUNT=1
-	pkt = append(pkt, 0x00, 0x00) // ANCOUNT=0
-	pkt = append(pkt, 0x00, 0x00) // NSCOUNT=0
-	pkt = append(pkt, 0x00, 0x00) // ARCOUNT=0
+	// Header (12 bytes)
+	buf[i] = byte(d.queryID >> 8)
+	buf[i+1] = byte(d.queryID)
+	i += 2
+	buf[i] = 0x01 // flags: RD=1
+	buf[i+1] = 0x00
+	i += 2
+	buf[i] = 0x00 // QDCOUNT=1
+	buf[i+1] = 0x01
+	i += 2
+	buf[i] = 0x00 // ANCOUNT=0
+	buf[i+1] = 0x00
+	i += 2
+	buf[i] = 0x00 // NSCOUNT=0
+	buf[i+1] = 0x00
+	i += 2
+	buf[i] = 0x00 // ARCOUNT=0
+	buf[i+1] = 0x00
+	i += 2
 
 	// Question: encode domain name
-	pkt = encodeDNSName(pkt, name)
+	i = encodeDNSName(buf, i, name)
 
 	// QTYPE: A (1)
-	pkt = append(pkt, 0x00, 0x01)
+	buf[i] = 0x00
+	buf[i+1] = 0x01
+	i += 2
 	// QCLASS: IN (1)
-	pkt = append(pkt, 0x00, 0x01)
+	buf[i] = 0x00
+	buf[i+1] = 0x01
+	i += 2
 
-	return pkt
+	return i
 }
 
-// encodeDNSName encodes a domain name into DNS wire format.
-func encodeDNSName(buf []byte, name string) []byte {
+// encodeDNSName encodes a domain name into DNS wire format at buf[offset:].
+// Returns the new offset.
+func encodeDNSName(buf []byte, offset int, name string) int {
 	start := 0
 	for i := 0; i <= len(name); i++ {
 		if i == len(name) || name[i] == '.' {
 			labelLen := i - start
 			if labelLen > 0 {
-				buf = append(buf, byte(labelLen))
-				buf = append(buf, name[start:i]...)
+				buf[offset] = byte(labelLen)
+				offset++
+				copy(buf[offset:], name[start:i])
+				offset += labelLen
 			}
 			start = i + 1
 		}
 	}
-	buf = append(buf, 0) // root label
-	return buf
+	buf[offset] = 0 // root label
+	offset++
+	return offset
 }
 
 // skipDNSName advances past a DNS name (handling compression pointers).

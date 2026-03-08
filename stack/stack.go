@@ -16,12 +16,25 @@ const (
 	ARPTableLen = 16
 )
 
+// Ring buffer masks (sizes must be powers of 2).
+const (
+	rxMask = RxBufSize - 1
+	txMask = TxBufSize - 1
+)
+
 // Ethernet header constants
 const (
 	ethHeaderSize = 14
 	ethTypeIPv4   = 0x0800
 	ethTypeARP    = 0x0806
 )
+
+// txTransportOffset is the byte offset in txPkt where transport-layer
+// headers (TCP/UDP/ICMP) should be written. Transport layers write
+// directly into txPkt at this offset, then sendIPv4 fills in the
+// IP and Ethernet headers and sends the frame. This eliminates all
+// intermediate copies and heap allocations in the send path.
+const txTransportOffset = ethHeaderSize + ipv4HeaderSize // 34
 
 // NetIF is the interface to the network hardware.
 type NetIF interface {
@@ -42,7 +55,8 @@ type Stack struct {
 	sockets [MaxSockets]Socket
 	arp     arpTable
 
-	// Packet buffer for building outgoing frames
+	// Packet buffer for building outgoing frames.
+	// Layout: [eth hdr 14][ip hdr 20][transport hdr + payload]
 	txPkt [MTU + ethHeaderSize]byte
 
 	// DHCP state
@@ -51,6 +65,12 @@ type Stack struct {
 	// DNS state
 	dns dnsResolver
 
+	// ICMP ping state
+	pingRecvd bool
+
+	// TCP initial sequence number counter
+	tcpISNVal uint32
+
 	// Monotonic time source for retransmissions
 	now func() time.Time
 }
@@ -58,9 +78,10 @@ type Stack struct {
 // New creates a new TCP/IP stack bound to the given network interface.
 func New(dev NetIF) *Stack {
 	s := &Stack{
-		dev: dev,
-		mac: dev.HardwareAddr(),
-		now: time.Now,
+		dev:       dev,
+		mac:       dev.HardwareAddr(),
+		now:       time.Now,
+		tcpISNVal: 0x12345678,
 	}
 	s.arp.init()
 	for i := range s.sockets {
@@ -125,18 +146,15 @@ func (s *Stack) Poll() error {
 }
 
 // sendEthFrame sends an Ethernet frame with the given destination MAC and type.
+// Used for ARP packets. IP packets bypass this and write directly to txPkt.
 func (s *Stack) sendEthFrame(dst [6]byte, ethType uint16, payload []byte) error {
 	if ethHeaderSize+len(payload) > len(s.txPkt) {
 		return errPacketTooLarge
 	}
-	// Destination MAC
 	copy(s.txPkt[0:6], dst[:])
-	// Source MAC
 	copy(s.txPkt[6:12], s.mac[:])
-	// EtherType
 	s.txPkt[12] = byte(ethType >> 8)
 	s.txPkt[13] = byte(ethType)
-	// Payload
 	copy(s.txPkt[ethHeaderSize:], payload)
 	return s.dev.SendEth(s.txPkt[:ethHeaderSize+len(payload)])
 }
@@ -149,10 +167,16 @@ func (s *Stack) sameSubnet(ip netip.Addr) bool {
 	local := s.localIP.As4()
 	remote := ip.As4()
 	mask := s.subnet.As4()
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if local[i]&mask[i] != remote[i]&mask[i] {
 			return false
 		}
 	}
 	return true
+}
+
+// tcpISN generates an initial sequence number.
+func (s *Stack) tcpISN() uint32 {
+	s.tcpISNVal += 64000
+	return s.tcpISNVal
 }

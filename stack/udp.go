@@ -14,13 +14,11 @@ func (s *Stack) handleUDP(srcIP, _ netip.Addr, payload []byte) {
 	dstPort := uint16(payload[2])<<8 | uint16(payload[3])
 	data := payload[udpHeaderSize:]
 
-	// Check for DHCP (port 68)
 	if dstPort == 68 {
 		s.dhcp.handlePacket(data)
 		return
 	}
 
-	// Check for DNS response (from our DNS socket)
 	if s.dns.active && srcPort == 53 {
 		s.dns.handleResponse(data)
 		return
@@ -35,11 +33,9 @@ func (s *Stack) handleUDP(srcIP, _ netip.Addr, payload []byte) {
 		if sock.localPort != dstPort {
 			continue
 		}
-		// If connected, check remote matches
 		if sock.remoteAddr.IsValid() && (sock.remoteAddr != srcIP || sock.remotePort != srcPort) {
 			continue
 		}
-		// Store sender info for unconnected sockets
 		if !sock.remoteAddr.IsValid() {
 			sock.remoteAddr = srcIP
 			sock.remotePort = srcPort
@@ -49,30 +45,34 @@ func (s *Stack) handleUDP(srcIP, _ netip.Addr, payload []byte) {
 	}
 }
 
-// sendUDP sends a UDP packet.
+// sendUDP sends a UDP packet. Writes directly into txPkt — zero allocations.
 func (s *Stack) sendUDP(srcPort, dstPort uint16, dst netip.Addr, data []byte) error {
+	dstMAC, ok := s.resolve(dst)
+	if !ok {
+		return errNoRoute
+	}
+
 	totalLen := udpHeaderSize + len(data)
-	pkt := make([]byte, totalLen)
+	buf := s.txPkt[txTransportOffset:]
 
-	pkt[0] = byte(srcPort >> 8)
-	pkt[1] = byte(srcPort)
-	pkt[2] = byte(dstPort >> 8)
-	pkt[3] = byte(dstPort)
-	pkt[4] = byte(totalLen >> 8)
-	pkt[5] = byte(totalLen)
-	pkt[6] = 0 // checksum (optional for UDP over IPv4)
-	pkt[7] = 0
+	buf[0] = byte(srcPort >> 8)
+	buf[1] = byte(srcPort)
+	buf[2] = byte(dstPort >> 8)
+	buf[3] = byte(dstPort)
+	buf[4] = byte(totalLen >> 8)
+	buf[5] = byte(totalLen)
+	buf[6] = 0 // checksum (filled below)
+	buf[7] = 0
 
-	copy(pkt[udpHeaderSize:], data)
+	copy(buf[udpHeaderSize:], data)
 
-	// Compute UDP checksum
 	phcs := pseudoHeaderChecksum(s.localIP, dst, ipProtoUDP, uint16(totalLen))
-	cs := checksum(pkt, phcs)
+	cs := checksum(buf[:totalLen], phcs)
 	if cs == 0 {
 		cs = 0xFFFF
 	}
-	pkt[6] = byte(cs >> 8)
-	pkt[7] = byte(cs)
+	buf[6] = byte(cs >> 8)
+	buf[7] = byte(cs)
 
-	return s.sendIPv4(dst, ipProtoUDP, pkt)
+	return s.sendIPv4(dstMAC, dst, ipProtoUDP, totalLen)
 }

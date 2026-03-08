@@ -59,52 +59,54 @@ func (s *Stack) handleIPv4(pkt []byte, _ []byte) {
 	}
 }
 
-// sendIPv4 sends an IPv4 packet to the given destination.
-func (s *Stack) sendIPv4(dst netip.Addr, protocol uint8, payload []byte) error {
-	// Resolve MAC address
-	dstMAC, ok := s.resolve(dst)
-	if !ok {
-		return errNoRoute // ARP request sent, retry later
-	}
-
-	totalLen := ipv4HeaderSize + len(payload)
+// sendIPv4 sends an IPv4 packet. The transport-layer payload must already
+// be written into s.txPkt[txTransportOffset:txTransportOffset+payloadLen].
+// dstMAC must be obtained from resolve() before calling this.
+//
+// This writes the IP header at txPkt[ethHeaderSize:] and the Ethernet
+// header at txPkt[0:], then sends the complete frame. Zero copies,
+// zero allocations.
+func (s *Stack) sendIPv4(dstMAC [6]byte, dst netip.Addr, protocol uint8, payloadLen int) error {
+	totalLen := ipv4HeaderSize + payloadLen
 	if totalLen > MTU {
 		return errPacketTooLarge
 	}
 
-	var pkt [MTU]byte
-
-	// IPv4 header
-	pkt[0] = 0x45 // version 4, IHL 5 (20 bytes)
-	pkt[1] = 0    // DSCP/ECN
-	pkt[2] = byte(totalLen >> 8)
-	pkt[3] = byte(totalLen)
-	pkt[4] = 0 // ID
-	pkt[5] = 0
-	pkt[6] = 0x40 // Don't Fragment
-	pkt[7] = 0
-	pkt[8] = 64 // TTL
-	pkt[9] = protocol
-	pkt[10] = 0 // checksum (filled below)
-	pkt[11] = 0
+	// IPv4 header directly in txPkt
+	ip := s.txPkt[ethHeaderSize:]
+	ip[0] = 0x45 // version 4, IHL 5 (20 bytes)
+	ip[1] = 0    // DSCP/ECN
+	ip[2] = byte(totalLen >> 8)
+	ip[3] = byte(totalLen)
+	ip[4] = 0    // ID
+	ip[5] = 0
+	ip[6] = 0x40 // Don't Fragment
+	ip[7] = 0
+	ip[8] = 64 // TTL
+	ip[9] = protocol
+	ip[10] = 0 // checksum (filled below)
+	ip[11] = 0
 
 	var src [4]byte
 	if s.localIP.IsValid() {
 		src = s.localIP.As4()
 	}
-	copy(pkt[12:16], src[:])
+	copy(ip[12:16], src[:])
 	d := dst.As4()
-	copy(pkt[16:20], d[:])
+	copy(ip[16:20], d[:])
 
 	// Compute header checksum
-	cs := checksumIPv4(pkt[:ipv4HeaderSize])
-	pkt[10] = byte(cs >> 8)
-	pkt[11] = byte(cs)
+	cs := checksumIPv4(ip[:ipv4HeaderSize])
+	ip[10] = byte(cs >> 8)
+	ip[11] = byte(cs)
 
-	// Payload
-	copy(pkt[ipv4HeaderSize:], payload)
+	// Ethernet header directly in txPkt
+	copy(s.txPkt[0:6], dstMAC[:])
+	copy(s.txPkt[6:12], s.mac[:])
+	s.txPkt[12] = 0x08
+	s.txPkt[13] = 0x00
 
-	return s.sendEthFrame(dstMAC, ethTypeIPv4, pkt[:totalLen])
+	return s.dev.SendEth(s.txPkt[:ethHeaderSize+totalLen])
 }
 
 // checksumIPv4 computes the RFC 1071 one's complement checksum.

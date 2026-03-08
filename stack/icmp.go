@@ -8,72 +8,78 @@ const (
 	icmpHeaderSize      = 8
 )
 
-// pingResult stores the ping response state.
-var pingGot bool
-
 // handleICMP processes an incoming ICMP packet.
 func (s *Stack) handleICMP(srcIP netip.Addr, payload []byte) {
 	if len(payload) < icmpHeaderSize {
 		return
 	}
 
-	icmpType := payload[0]
-
-	switch icmpType {
+	switch payload[0] {
 	case icmpTypeEchoRequest:
 		s.sendICMPEchoReply(srcIP, payload)
 	case icmpTypeEchoReply:
-		pingGot = true
+		s.pingRecvd = true
 	}
 }
 
-// SendPing sends an ICMP echo request to the given IP.
+// SendPing sends an ICMP echo request. Writes directly into txPkt.
 func (s *Stack) SendPing(dst netip.Addr) error {
-	var pkt [16]byte
-	pkt[0] = icmpTypeEchoRequest
-	pkt[1] = 0 // code
-	// ID
-	pkt[4] = 0x12
-	pkt[5] = 0x34
-	// Seq
-	pkt[6] = 0x00
-	pkt[7] = 0x01
-	// Data
-	pkt[8] = 'p'
-	pkt[9] = 'i'
-	pkt[10] = 'n'
-	pkt[11] = 'g'
+	dstMAC, ok := s.resolve(dst)
+	if !ok {
+		return errNoRoute
+	}
 
-	// Checksum
-	pkt[2] = 0
-	pkt[3] = 0
-	cs := checksum(pkt[:12], 0)
-	pkt[2] = byte(cs >> 8)
-	pkt[3] = byte(cs)
+	buf := s.txPkt[txTransportOffset:]
+	buf[0] = icmpTypeEchoRequest
+	buf[1] = 0 // code
+	buf[2] = 0 // checksum (filled below)
+	buf[3] = 0
+	buf[4] = 0x12 // ID
+	buf[5] = 0x34
+	buf[6] = 0x00 // Seq
+	buf[7] = 0x01
+	buf[8] = 'p' // Data
+	buf[9] = 'i'
+	buf[10] = 'n'
+	buf[11] = 'g'
 
-	pingGot = false
-	return s.sendIPv4(dst, ipProtoICMP, pkt[:12])
+	cs := checksum(buf[:12], 0)
+	buf[2] = byte(cs >> 8)
+	buf[3] = byte(cs)
+
+	s.pingRecvd = false
+	return s.sendIPv4(dstMAC, dst, ipProtoICMP, 12)
 }
 
 // PingResult returns true if a ping reply was received.
 func (s *Stack) PingResult() bool {
-	return pingGot
+	return s.pingRecvd
 }
 
 // sendICMPEchoReply responds to a ping request.
+// Writes directly into txPkt — zero allocations.
 func (s *Stack) sendICMPEchoReply(dst netip.Addr, request []byte) {
-	// Build reply: change type to 0, recalculate checksum
-	reply := make([]byte, len(request))
-	copy(reply, request)
+	dstMAC, ok := s.resolve(dst)
+	if !ok {
+		return
+	}
 
-	reply[0] = icmpTypeEchoReply
-	reply[1] = 0 // code
-	reply[2] = 0 // zero checksum before computing
-	reply[3] = 0
+	n := len(request)
+	if n > MTU-ipv4HeaderSize {
+		n = MTU - ipv4HeaderSize
+	}
 
-	cs := checksum(reply, 0)
-	reply[2] = byte(cs >> 8)
-	reply[3] = byte(cs)
+	buf := s.txPkt[txTransportOffset:]
+	copy(buf[:n], request)
 
-	s.sendIPv4(dst, ipProtoICMP, reply)
+	buf[0] = icmpTypeEchoReply
+	buf[1] = 0
+	buf[2] = 0
+	buf[3] = 0
+
+	cs := checksum(buf[:n], 0)
+	buf[2] = byte(cs >> 8)
+	buf[3] = byte(cs)
+
+	s.sendIPv4(dstMAC, dst, ipProtoICMP, n)
 }

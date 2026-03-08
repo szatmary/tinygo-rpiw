@@ -20,15 +20,15 @@ const (
 
 // DHCP option codes
 const (
-	dhcpOptSubnetMask    = 1
-	dhcpOptRouter        = 3
-	dhcpOptDNS           = 6
-	dhcpOptRequestedIP   = 50
-	dhcpOptLeaseTime     = 51
-	dhcpOptMsgType       = 53
-	dhcpOptServerID      = 54
-	dhcpOptParamReqList  = 55
-	dhcpOptEnd           = 255
+	dhcpOptSubnetMask   = 1
+	dhcpOptRouter       = 3
+	dhcpOptDNS          = 6
+	dhcpOptRequestedIP  = 50
+	dhcpOptLeaseTime    = 51
+	dhcpOptMsgType      = 53
+	dhcpOptServerID     = 54
+	dhcpOptParamReqList = 55
+	dhcpOptEnd          = 255
 )
 
 type dhcpState uint8
@@ -42,9 +42,9 @@ const (
 )
 
 type dhcpClient struct {
-	stack    *Stack
-	state    dhcpState
-	xid      uint32
+	stack     *Stack
+	state     dhcpState
+	xid       uint32
 	offeredIP netip.Addr
 	serverIP  netip.Addr
 	leaseTime time.Duration
@@ -90,7 +90,6 @@ func (d *dhcpClient) poll(now time.Time) {
 		if !d.retxTime.IsZero() && now.After(d.retxTime) {
 			d.retxCount++
 			if d.retxCount > 3 {
-				// Lease expired, start over
 				d.state = dhcpInit
 				d.Start()
 				return
@@ -105,7 +104,6 @@ func (d *dhcpClient) handlePacket(data []byte) {
 		return
 	}
 
-	// Verify it's a reply (op=2) and matches our XID
 	if data[0] != 2 {
 		return
 	}
@@ -114,10 +112,8 @@ func (d *dhcpClient) handlePacket(data []byte) {
 		return
 	}
 
-	// Your IP address (yiaddr)
 	yiaddr := netip.AddrFrom4([4]byte{data[16], data[17], data[18], data[19]})
 
-	// Parse options starting at offset 240 (after magic cookie)
 	if uint32(data[236])<<24|uint32(data[237])<<16|uint32(data[238])<<8|uint32(data[239]) != dhcpMagicCookie {
 		return
 	}
@@ -188,12 +184,10 @@ func (d *dhcpClient) handlePacket(data []byte) {
 			d.state = dhcpBound
 			d.leaseTime = time.Duration(leaseSeconds) * time.Second
 			d.renewTime = d.stack.now().Add(d.leaseTime / 2)
-			// Fall back to router as DNS if not provided
 			if !dns.IsValid() && router.IsValid() {
 				dns = router
 			}
 			d.stack.SetAddr(yiaddr, router, subnet, dns)
-			// Proactively ARP for gateway so first TCP/DNS doesn't stall
 			if router.IsValid() {
 				d.stack.sendARPRequest(router)
 			}
@@ -204,87 +198,88 @@ func (d *dhcpClient) handlePacket(data []byte) {
 }
 
 func (d *dhcpClient) sendDiscover() error {
-	pkt := d.buildPacket(dhcpDiscover, netip.Addr{}, netip.Addr{})
+	var buf [300]byte
+	n := d.buildPacket(dhcpDiscover, netip.Addr{}, netip.Addr{}, buf[:])
 	d.retxTime = d.stack.now().Add(4 * time.Second)
 
 	broadcast := netip.AddrFrom4([4]byte{255, 255, 255, 255})
-	return d.stack.sendUDP(dhcpClientPort, dhcpServerPort, broadcast, pkt)
+	return d.stack.sendUDP(dhcpClientPort, dhcpServerPort, broadcast, buf[:n])
 }
 
 func (d *dhcpClient) sendRequest() error {
-	pkt := d.buildPacket(dhcpRequest, d.offeredIP, d.serverIP)
+	var buf [300]byte
+	n := d.buildPacket(dhcpRequest, d.offeredIP, d.serverIP, buf[:])
 	d.retxTime = d.stack.now().Add(4 * time.Second)
 
 	broadcast := netip.AddrFrom4([4]byte{255, 255, 255, 255})
-	return d.stack.sendUDP(dhcpClientPort, dhcpServerPort, broadcast, pkt)
+	return d.stack.sendUDP(dhcpClientPort, dhcpServerPort, broadcast, buf[:n])
 }
 
-func (d *dhcpClient) buildPacket(msgType uint8, requestedIP, serverID netip.Addr) []byte {
-	// BOOTP header (236 bytes) + magic cookie (4) + options
-	pkt := make([]byte, 300)
+// buildPacket writes a DHCP packet into buf and returns the length.
+// No allocations.
+func (d *dhcpClient) buildPacket(msgType uint8, requestedIP, serverID netip.Addr, buf []byte) int {
+	// Clear the buffer
+	for i := range buf {
+		buf[i] = 0
+	}
 
-	pkt[0] = 1    // op: BOOTREQUEST
-	pkt[1] = 1    // htype: Ethernet
-	pkt[2] = 6    // hlen: MAC address length
-	pkt[3] = 0    // hops
-	pkt[10] = 0x80 // flags: BROADCAST (server must reply via broadcast)
+	buf[0] = 1    // op: BOOTREQUEST
+	buf[1] = 1    // htype: Ethernet
+	buf[2] = 6    // hlen: MAC address length
+	buf[3] = 0    // hops
+	buf[10] = 0x80 // flags: BROADCAST
 
 	// XID
-	pkt[4] = byte(d.xid >> 24)
-	pkt[5] = byte(d.xid >> 16)
-	pkt[6] = byte(d.xid >> 8)
-	pkt[7] = byte(d.xid)
+	buf[4] = byte(d.xid >> 24)
+	buf[5] = byte(d.xid >> 16)
+	buf[6] = byte(d.xid >> 8)
+	buf[7] = byte(d.xid)
 
 	// Client MAC
 	mac := d.stack.mac
-	copy(pkt[28:34], mac[:])
+	copy(buf[28:34], mac[:])
 
 	// Magic cookie
-	pkt[236] = 0x63
-	pkt[237] = 0x82
-	pkt[238] = 0x53
-	pkt[239] = 0x63
+	buf[236] = 0x63
+	buf[237] = 0x82
+	buf[238] = 0x53
+	buf[239] = 0x63
 
 	// Options
 	i := 240
 
-	// Message type
-	pkt[i] = dhcpOptMsgType
-	pkt[i+1] = 1
-	pkt[i+2] = msgType
+	buf[i] = dhcpOptMsgType
+	buf[i+1] = 1
+	buf[i+2] = msgType
 	i += 3
 
-	// Requested IP (for REQUEST)
 	if requestedIP.IsValid() {
-		pkt[i] = dhcpOptRequestedIP
-		pkt[i+1] = 4
+		buf[i] = dhcpOptRequestedIP
+		buf[i+1] = 4
 		ip4 := requestedIP.As4()
-		copy(pkt[i+2:i+6], ip4[:])
+		copy(buf[i+2:i+6], ip4[:])
 		i += 6
 	}
 
-	// Server ID (for REQUEST)
 	if serverID.IsValid() {
-		pkt[i] = dhcpOptServerID
-		pkt[i+1] = 4
+		buf[i] = dhcpOptServerID
+		buf[i+1] = 4
 		ip4 := serverID.As4()
-		copy(pkt[i+2:i+6], ip4[:])
+		copy(buf[i+2:i+6], ip4[:])
 		i += 6
 	}
 
-	// Parameter request list
-	pkt[i] = dhcpOptParamReqList
-	pkt[i+1] = 3
-	pkt[i+2] = dhcpOptSubnetMask
-	pkt[i+3] = dhcpOptRouter
-	pkt[i+4] = dhcpOptDNS
+	buf[i] = dhcpOptParamReqList
+	buf[i+1] = 3
+	buf[i+2] = dhcpOptSubnetMask
+	buf[i+3] = dhcpOptRouter
+	buf[i+4] = dhcpOptDNS
 	i += 5
 
-	// End
-	pkt[i] = dhcpOptEnd
+	buf[i] = dhcpOptEnd
 	i++
 
-	return pkt[:i]
+	return i
 }
 
 // IsBound returns true if DHCP has obtained an IP address.
