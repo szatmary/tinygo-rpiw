@@ -20,7 +20,7 @@ func (d *Device) InitBusOnly() error {
 			println("  PASS!")
 			return nil
 		}
-		println("  attempt", i, "got", got, "want", testPattern)
+		println("  attempt", i, "got", got, "want 0xFEEDBEAD")
 	}
 
 	return errors.New("cyw43: test pattern never matched")
