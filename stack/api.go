@@ -262,3 +262,9 @@ func (s *Stack) DNSResolve(name string, timeout time.Duration) (netip.Addr, erro
 func (s *Stack) NTPSync(server netip.Addr, timeout time.Duration) (time.Time, error) {
 	return s.ntp.Sync(server, timeout)
 }
+
+// SetHostname enables the mDNS responder for "name.local".
+// The caller must also add MdnsMulticastMAC to the hardware multicast filter.
+func (s *Stack) SetHostname(name string) {
+	s.mdns.SetHostname(name)
+}

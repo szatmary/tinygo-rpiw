@@ -38,20 +38,21 @@ func main() {
 	println("[auto] Running init...")
 	cmdInit()
 	if nd != nil {
-		nd.SetStatusHandler(func(e wifi.Event) {
-			switch e {
-			case wifi.EventLinkUp:
-				println("[status] WiFi link up")
-			case wifi.EventLinkDown:
-				println("[status] WiFi link down — reconnecting...")
-			case wifi.EventIPAcquired:
-				ip, _ := nd.Addr()
-				fmt.Printf("[status] IP acquired: %s\n", ip)
-			}
-		})
 		nd.EnableAutoConnect(wifiSSID, wifi.JoinOptions{
 			Auth:       wifi.AuthWPA2PSK,
 			Passphrase: wifiPass,
+			Hostname:   "picow",
+			StatusFn: func(e wifi.Event) {
+				switch e {
+				case wifi.EventLinkUp:
+					println("[status] WiFi link up")
+				case wifi.EventLinkDown:
+					println("[status] WiFi link down — reconnecting...")
+				case wifi.EventIPAcquired:
+					ip, _ := nd.Addr()
+					fmt.Printf("[status] IP acquired: %s\n", ip)
+				}
+			},
 		})
 	}
 
@@ -209,11 +210,8 @@ func cmdInit() {
 	start := time.Now()
 
 	dev = &wifi.Device{}
-	cfg := wifi.DefaultConfig()
-	fmt.Printf("[init] Firmware=%d bytes CLM=%d bytes BT=%d bytes\n", len(cfg.Firmware), len(cfg.CLM), len(cfg.BTFirmware))
-
 	println("[init] Calling dev.Init()...")
-	if err := dev.Init(cfg); err != nil {
+	if err := dev.Init(); err != nil {
 		fmt.Printf("[init] ERROR: %s\n", err.Error())
 		dev = nil
 		return

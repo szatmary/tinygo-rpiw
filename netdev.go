@@ -178,14 +178,6 @@ func (nd *NetDev) NTPSync(server netip.Addr, timeout time.Duration) (time.Time, 
 	return nd.stack.NTPSync(server, timeout)
 }
 
-// SetStatusHandler registers a callback for network status changes.
-// The callback may safely call other NetDev methods (e.g. Addr).
-func (nd *NetDev) SetStatusHandler(fn func(Event)) {
-	nd.mu.Lock()
-	defer nd.mu.Unlock()
-	nd.statusFn = fn
-}
-
 // EnableAutoConnect enables non-blocking automatic WiFi connection with
 // infinite retries. Poll advances the connection state machine one step
 // at a time — it never blocks. On link loss, reconnection starts
@@ -193,6 +185,12 @@ func (nd *NetDev) SetStatusHandler(fn func(Event)) {
 func (nd *NetDev) EnableAutoConnect(ssid string, opts JoinOptions) {
 	nd.mu.Lock()
 	defer nd.mu.Unlock()
+	if opts.Hostname != "" {
+		nd.stack.SetHostname(opts.Hostname)
+	}
+	if opts.StatusFn != nil {
+		nd.statusFn = opts.StatusFn
+	}
 	nd.autoSSID = ssid
 	nd.autoOpts = opts
 	nd.autoConn = true
@@ -284,11 +282,29 @@ func (nd *NetDev) StartJoin(ssid string, opts JoinOptions) error {
 	return nd.dev.StartJoin(ssid, opts)
 }
 
-// Join connects to a WiFi network. Blocks until connected or timeout.
+// Join connects to a WiFi network and configures IP addressing.
+// If opts.IP is set, uses static addressing. Otherwise runs DHCP automatically.
+// Blocks until fully connected with an IP address, or timeout.
 func (nd *NetDev) Join(ssid string, opts JoinOptions) error {
 	nd.mu.Lock()
 	defer nd.mu.Unlock()
-	return nd.dev.Join(ssid, opts)
+	if opts.Hostname != "" {
+		nd.stack.SetHostname(opts.Hostname)
+	}
+	if opts.StatusFn != nil {
+		nd.statusFn = opts.StatusFn
+	}
+	if err := nd.dev.Join(ssid, opts); err != nil {
+		return err
+	}
+	if opts.IP.IsValid() {
+		nd.stack.SetAddr(opts.IP, opts.Gateway, opts.Subnet, opts.DNS)
+		return nil
+	}
+	if err := nd.stack.DHCPStart(); err != nil {
+		return err
+	}
+	return nd.stack.WaitDHCP(15 * time.Second)
 }
 
 // Disconnect disconnects from the current network.
@@ -331,8 +347,14 @@ func (nd *NetDev) maintainConnection() {
 
 	case connJoining:
 		if nd.dev.IsLinkUp() {
-			nd.connSt = connDHCP
 			nd.notify(EventLinkUp)
+			if nd.autoOpts.IP.IsValid() {
+				nd.stack.SetAddr(nd.autoOpts.IP, nd.autoOpts.Gateway, nd.autoOpts.Subnet, nd.autoOpts.DNS)
+				nd.connSt = connUp
+				nd.notify(EventIPAcquired)
+				return
+			}
+			nd.connSt = connDHCP
 			nd.stack.DHCPStart()
 			nd.connDeadline = now.Add(15 * time.Second)
 			return

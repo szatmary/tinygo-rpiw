@@ -155,12 +155,23 @@ func (s *Stack) sendARPReply(dstMAC [6]byte, dstIP netip.Addr) {
 	s.sendEthFrame(dstMAC, ethTypeARP, arp[:])
 }
 
+// multicastMAC returns the Ethernet multicast MAC for an IPv4 multicast address.
+// Maps 224.x.y.z → 01:00:5E:(x&0x7F):y:z
+func multicastMAC(ip netip.Addr) [6]byte {
+	a := ip.As4()
+	return [6]byte{0x01, 0x00, 0x5E, a[1] & 0x7F, a[2], a[3]}
+}
+
 // resolve resolves an IP to a MAC address. If not in ARP cache,
 // sends an ARP request and waits for reply.
 func (s *Stack) resolve(ip netip.Addr) ([6]byte, bool) {
 	// Broadcast uses broadcast MAC directly
 	if ip.As4() == [4]byte{255, 255, 255, 255} {
 		return [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, true
+	}
+	// Multicast: derive MAC directly, no ARP needed
+	if ip.IsMulticast() {
+		return multicastMAC(ip), true
 	}
 	// If not on same subnet, resolve gateway instead
 	if !s.sameSubnet(ip) {

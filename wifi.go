@@ -2,6 +2,7 @@ package tinygorpiw
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"time"
 	"unsafe"
 )
@@ -17,9 +18,16 @@ const (
 )
 
 // JoinOptions configures WiFi connection parameters.
+// If IP is set, static addressing is used. Otherwise DHCP runs automatically.
 type JoinOptions struct {
 	Auth       Auth
 	Passphrase string
+	Hostname   string     // mDNS hostname (without ".local" suffix)
+	IP         netip.Addr // Static IP (if unset, DHCP is used automatically)
+	Gateway    netip.Addr
+	Subnet     netip.Addr
+	DNS        netip.Addr
+	StatusFn   func(Event) // Called on link up/down, IP acquired
 }
 
 // StartJoin sends the WiFi join ioctls and returns immediately without
@@ -207,6 +215,24 @@ func (d *Device) GPIOSet(wlGPIO uint8, value bool) error {
 	binary.LittleEndian.PutUint32(buf[:4], mask)
 	binary.LittleEndian.PutUint32(buf[4:], val)
 	return d.setIovar("gpioout", buf[:])
+}
+
+// AddMulticastMAC adds a MAC address to the CYW43439 multicast filter.
+// Required for receiving multicast packets (e.g., mDNS 01:00:5E:00:00:FB).
+func (d *Device) AddMulticastMAC(mac [6]byte) error {
+	buf := d.iovarBytes()
+	n := copy(buf, "mcast_list")
+	buf[n] = 0
+	n++
+	// count = 1 (uint32 LE)
+	buf[n] = 1
+	buf[n+1] = 0
+	buf[n+2] = 0
+	buf[n+3] = 0
+	n += 4
+	copy(buf[n:], mac[:])
+	n += 6
+	return d.doIoctl(ioctlSET, wlcSetVar, 0, buf[:n])
 }
 
 func authToWSec(auth Auth) (wsec uint32, wpaAuth uint32) {

@@ -21,7 +21,7 @@ var (
 func main() {
 	// Initialize the CYW43439
 	dev := &wifi.Device{}
-	if err := dev.Init(wifi.DefaultConfig()); err != nil {
+	if err := dev.Init(); err != nil {
 		panic("wifi init: " + err.Error())
 	}
 
@@ -30,7 +30,7 @@ func main() {
 	// Create network device (thread-safe wrapper)
 	nd := wifi.NewNetDev(dev)
 
-	// Connect to WiFi
+	// Connect to WiFi (DHCP runs automatically)
 	if err := nd.Join(ssid, wifi.JoinOptions{
 		Auth:       wifi.AuthWPA2PSK,
 		Passphrase: pass,
@@ -38,21 +38,10 @@ func main() {
 		panic("wifi join: " + err.Error())
 	}
 
-	fmt.Println("WiFi connected!")
-	mac := nd.HardwareAddr()
-	fmt.Printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
-
-	// Start DHCP
-	if err := nd.DHCP(); err != nil {
-		panic("dhcp start: " + err.Error())
-	}
-	if err := nd.WaitDHCP(15 * time.Second); err != nil {
-		panic("dhcp: " + err.Error())
-	}
-
 	ip, _ := nd.Addr()
-	fmt.Println("IP:", ip)
+	mac := nd.HardwareAddr()
+	fmt.Printf("Connected! MAC: %02x:%02x:%02x:%02x:%02x:%02x IP: %s\n",
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], ip)
 
 	// Register as TinyGo netdev
 	// netdev.UseNetdev(nd)

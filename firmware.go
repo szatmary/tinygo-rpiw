@@ -10,13 +10,3 @@ var fwCLM string
 
 //go:embed firmware/btfw.zlib
 var fwBT string
-
-// DefaultConfig returns a Config with WiFi+Bluetooth firmware (zlib-compressed).
-// Firmware is decompressed during init and streamed to the chip.
-func DefaultConfig() Config {
-	return Config{
-		Firmware:   fwWiFi,
-		CLM:        fwCLM,
-		BTFirmware: fwBT,
-	}
-}

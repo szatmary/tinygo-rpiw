@@ -29,6 +29,11 @@ func (s *Stack) handleUDP(srcIP, _ netip.Addr, payload []byte) {
 		return
 	}
 
+	if dstPort == mdnsPort {
+		s.mdns.handleQuery(srcIP, data)
+		return
+	}
+
 	// Dispatch to socket
 	for i := range s.sockets {
 		sock := &s.sockets[i]

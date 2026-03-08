@@ -9,13 +9,7 @@ import (
 	"unsafe"
 )
 
-type Config struct {
-	Firmware   string // WiFi+BT firmware (zlib-compressed)
-	CLM        string // CLM data (zlib-compressed)
-	BTFirmware string // Optional: BT firmware (zlib-compressed)
-}
-
-func (d *Device) Init(cfg Config) error {
+func (d *Device) Init() error {
 	// 1. Init hardware (PIO, CS, power cycle)
 	bus, cs, err := initHardware()
 	if err != nil {
@@ -91,11 +85,8 @@ func (d *Device) Init(cfg Config) error {
 	d.bp_write32(socsramBankxIndex, 3)
 	d.bp_write32(socsramBankxPDA, 0)
 
-	if len(cfg.Firmware) == 0 {
-		return errFirmware
-	}
 	println("  [init] loading firmware...")
-	if err := d.bp_writezlib(0, cfg.Firmware); err != nil {
+	if err := d.bp_writezlib(0, fwWiFi); err != nil {
 		return err
 	}
 	println("  [init] firmware loaded")
@@ -170,29 +161,25 @@ func (d *Device) Init(cfg Config) error {
 
 	println("  [init] bus ready")
 
-	// 17. Init Bluetooth (if firmware provided)
-	if len(cfg.BTFirmware) > 0 {
-		println("  [init] loading BT firmware...")
-		btFW, err := decompressZlib(cfg.BTFirmware)
-		if err != nil {
-			return err
-		}
-		if err := d.btInit(string(btFW)); err != nil {
-			return err
-		}
-		d.btEnabled = true
-		println("  [init] BT ready")
+	// 17. Init Bluetooth
+	println("  [init] loading BT firmware...")
+	btFW, err := decompressZlib(fwBT)
+	if err != nil {
+		return err
 	}
+	if err := d.btInit(string(btFW)); err != nil {
+		return err
+	}
+	d.btEnabled = true
+	println("  [init] BT ready")
 
 	// 18. Init control (CLM, country, MAC, events)
-	if len(cfg.CLM) > 0 {
-		clmData, err := decompressZlib(cfg.CLM)
-		if err != nil {
-			return err
-		}
-		if err := d.initControl(string(clmData)); err != nil {
-			return err
-		}
+	clmData, err := decompressZlib(fwCLM)
+	if err != nil {
+		return err
+	}
+	if err := d.initControl(string(clmData)); err != nil {
+		return err
 	}
 
 	return nil
@@ -273,6 +260,10 @@ func (d *Device) initControl(clm string) error {
 	var pmBuf [4]byte
 	pmBuf[0] = 0 // PM_NONE — disable power save
 	d.doIoctl(ioctlSET, 0x56, 0, pmBuf[:])
+
+	// Enable mDNS multicast MAC filter (01:00:5E:00:00:FB) so the chip
+	// passes mDNS packets through. Harmless if mDNS is never used.
+	d.AddMulticastMAC([6]byte{0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB})
 
 	return nil
 }
