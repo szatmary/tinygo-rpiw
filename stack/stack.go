@@ -71,6 +71,9 @@ type Stack struct {
 	// ICMP ping state
 	pingRecvd bool
 
+	// Ephemeral port counter
+	ephemeralPort uint16
+
 	// TCP initial sequence number counter
 	tcpISNVal uint32
 
@@ -83,8 +86,9 @@ func New(dev NetIF) *Stack {
 	s := &Stack{
 		dev:       dev,
 		mac:       dev.HardwareAddr(),
-		now:       time.Now,
-		tcpISNVal: 0x12345678,
+		now:           time.Now,
+		ephemeralPort: 49152,
+		tcpISNVal:     0x12345678,
 	}
 	s.arp.init()
 	for i := range s.sockets {

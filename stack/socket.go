@@ -241,17 +241,24 @@ func (st *Stack) getSocket(fd int) (*Socket, error) {
 
 // nextEphemeralPort returns the next available ephemeral port.
 func (st *Stack) nextEphemeralPort() uint16 {
-	for port := uint16(49152); port < 65535; port++ {
+	// Scan from last used port to avoid O(ports*sockets) search.
+	// Wraps around the ephemeral range [49152, 65535).
+	const base = 49152
+	const count = 65535 - base
+	for i := uint16(0); i < count; i++ {
+		port := base + (st.ephemeralPort-base+i)%count
 		used := false
-		for i := range st.sockets {
-			if st.sockets[i].state != sockFree && st.sockets[i].localPort == port {
+		for j := range st.sockets {
+			if st.sockets[j].state != sockFree && st.sockets[j].localPort == port {
 				used = true
 				break
 			}
 		}
 		if !used {
+			st.ephemeralPort = port + 1
 			return port
 		}
 	}
-	return 49152
+	st.ephemeralPort++
+	return st.ephemeralPort - 1
 }

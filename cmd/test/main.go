@@ -37,7 +37,7 @@ func main() {
 	// Init and enable auto-connect
 	println("[auto] Running init...")
 	cmdInit()
-	if dev != nil {
+	if nd != nil {
 		nd.SetStatusHandler(func(e wifi.Event) {
 			switch e {
 			case wifi.EventLinkUp:
@@ -97,9 +97,9 @@ func main() {
 
 		// Blink LED every 500ms
 		tick++
-		if dev != nil && tick%500 == 0 {
+		if nd != nil && tick%500 == 0 {
 			ledOn = !ledOn
-			dev.GPIOSet(0, ledOn)
+			nd.GPIOSet(0, ledOn)
 		}
 
 		time.Sleep(time.Millisecond)
@@ -170,11 +170,11 @@ func handleCommand(line string) {
 	case "btscan":
 		cmdBTScan()
 	case "btinfo":
-		if dev == nil {
+		if nd == nil {
 			println("Not initialized")
 		} else {
-			n := dev.BufferedHCI()
-			fmt.Printf("BT enabled: %v, HCI buffered: %d\n", dev.BTEnabled(), n)
+			n := nd.BufferedHCI()
+			fmt.Printf("BT enabled: %v, HCI buffered: %d\n", nd.BTEnabled(), n)
 		}
 	case "ping":
 		if len(parts) < 2 {
@@ -209,7 +209,7 @@ func cmdInit() {
 	start := time.Now()
 
 	dev = &wifi.Device{}
-	cfg := wifi.DefaultBluetoothConfig()
+	cfg := wifi.DefaultConfig()
 	fmt.Printf("[init] Firmware=%d bytes CLM=%d bytes BT=%d bytes\n", len(cfg.Firmware), len(cfg.CLM), len(cfg.BTFirmware))
 
 	println("[init] Calling dev.Init()...")
@@ -229,24 +229,24 @@ func cmdInit() {
 }
 
 func cmdMAC() {
-	if dev == nil {
+	if nd == nil {
 		println("Run 'init' first")
 		return
 	}
-	mac := dev.HardwareAddr()
+	mac := nd.HardwareAddr()
 	fmt.Printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
 }
 
 func cmdJoin(ssid, pass string) {
-	if dev == nil {
+	if nd == nil {
 		println("Run 'init' first")
 		return
 	}
 	fmt.Printf("[join] Connecting to '%s'...\n", ssid)
 	start := time.Now()
 
-	err := dev.Join(ssid, wifi.JoinOptions{
+	err := nd.Join(ssid, wifi.JoinOptions{
 		Auth:       wifi.AuthWPA2PSK,
 		Passphrase: pass,
 	})
@@ -258,11 +258,11 @@ func cmdJoin(ssid, pass string) {
 }
 
 func cmdStatus() {
-	if dev == nil {
+	if nd == nil {
 		println("Not initialized")
 		return
 	}
-	if dev.IsLinkUp() {
+	if nd.IsLinkUp() {
 		println("Link: UP")
 	} else {
 		println("Link: DOWN")
@@ -274,7 +274,7 @@ func cmdDHCP() {
 		println("Run 'init' first")
 		return
 	}
-	if !dev.IsLinkUp() {
+	if !nd.IsLinkUp() {
 		println("WiFi not connected, run 'join' first")
 		return
 	}
@@ -310,7 +310,7 @@ func cmdHTTPGet(host, path string) {
 		println("Run 'init' first")
 		return
 	}
-	if !dev.IsLinkUp() {
+	if !nd.IsLinkUp() {
 		println("WiFi not connected")
 		return
 	}
@@ -341,10 +341,15 @@ func cmdHTTPGet(host, path string) {
 	}
 	println("[http] Connected!")
 
-	// Send HTTP request
-	req := "GET " + path + " HTTP/1.0\r\nHost: " + host + "\r\n\r\n"
+	// Send HTTP request (build in fixed buffer to avoid string concat allocation)
+	var reqBuf [256]byte
+	n := copy(reqBuf[:], "GET ")
+	n += copy(reqBuf[n:], path)
+	n += copy(reqBuf[n:], " HTTP/1.0\r\nHost: ")
+	n += copy(reqBuf[n:], host)
+	n += copy(reqBuf[n:], "\r\n\r\n")
 	deadline := time.Now().Add(10 * time.Second)
-	_, err = nd.Send(fd, []byte(req), 0, deadline)
+	_, err = nd.Send(fd, reqBuf[:n], 0, deadline)
 	if err != nil {
 		fmt.Printf("[http] Send: %s\n", err.Error())
 		nd.Close(fd)
@@ -372,7 +377,7 @@ func cmdNTP(server string) {
 		println("Run init/join/dhcp first")
 		return
 	}
-	if !dev.IsLinkUp() {
+	if !nd.IsLinkUp() {
 		println("WiFi not connected")
 		return
 	}
@@ -422,7 +427,7 @@ func cmdPing(ipStr string) {
 }
 
 func cmdBTScan() {
-	if dev == nil || !dev.BTEnabled() {
+	if nd == nil || !nd.BTEnabled() {
 		println("BT not initialized")
 		return
 	}
@@ -476,8 +481,8 @@ func cmdBTScan() {
 		if nd != nil {
 			nd.Poll()
 		}
-		if dev.BufferedHCI() > 0 {
-			n, err := dev.ReadHCI(hciBuf[:])
+		if nd.BufferedHCI() > 0 {
+			n, err := nd.ReadHCI(hciBuf[:])
 			if err != nil {
 				continue
 			}
@@ -505,7 +510,7 @@ func hciSendCmd(opcode uint16, params []byte) error {
 	buf[2] = byte(opcode >> 8)
 	buf[3] = byte(len(params))
 	copy(buf[4:], params)
-	_, err := dev.WriteHCI(buf[:4+len(params)])
+	_, err := nd.WriteHCI(buf[:4+len(params)])
 	return err
 }
 
@@ -517,8 +522,8 @@ func hciWaitCmdComplete(opcode uint16, timeout time.Duration) error {
 		if nd != nil {
 			nd.Poll()
 		}
-		if dev.BufferedHCI() > 0 {
-			n, err := dev.ReadHCI(buf[:])
+		if nd.BufferedHCI() > 0 {
+			n, err := nd.ReadHCI(buf[:])
 			if err != nil {
 				continue
 			}
@@ -612,11 +617,11 @@ func parseADName(ad []byte) string {
 }
 
 func cmdDisconnect() {
-	if dev == nil {
+	if nd == nil {
 		println("Not initialized")
 		return
 	}
-	if err := dev.Disconnect(); err != nil {
+	if err := nd.Disconnect(); err != nil {
 		fmt.Printf("ERROR: %s\n", err.Error())
 		return
 	}

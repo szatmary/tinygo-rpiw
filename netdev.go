@@ -2,6 +2,7 @@ package tinygorpiw
 
 import (
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/mszatmary/tinygorpiw/stack"
@@ -35,7 +36,10 @@ const (
 
 // NetDev implements the TinyGo Netdever interface, bridging the
 // CYW43439 driver and TCP/IP stack to standard Go networking.
+// All public methods are safe for concurrent use from multiple
+// goroutines (required for dual-core RP2040/RP2350).
 type NetDev struct {
+	mu    sync.Mutex
 	dev   *Device
 	stack *stack.Stack
 
@@ -63,16 +67,22 @@ func NewNetDev(dev *Device) *NetDev {
 
 // GetHostByName resolves a hostname to an IP address.
 func (nd *NetDev) GetHostByName(name string) (netip.Addr, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.DNSResolve(name, 5*time.Second)
 }
 
 // Addr returns the device's IP address (obtained via DHCP or manual config).
 func (nd *NetDev) Addr() (netip.Addr, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.Addr(), nil
 }
 
 // Socket creates a new socket and returns its file descriptor.
 func (nd *NetDev) Socket(domain int, stype int, protocol int) (int, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	if domain != AF_INET {
 		return -1, errNotReady
 	}
@@ -81,72 +91,98 @@ func (nd *NetDev) Socket(domain int, stype int, protocol int) (int, error) {
 
 // Bind binds a socket to a local address.
 func (nd *NetDev) Bind(sockfd int, ip netip.AddrPort) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.Bind(sockfd, ip.Port())
 }
 
 // Connect connects a socket to a remote address.
 func (nd *NetDev) Connect(sockfd int, host string, ip netip.AddrPort) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.Connect(sockfd, ip.Addr(), ip.Port())
 }
 
 // Listen marks a socket as listening.
 func (nd *NetDev) Listen(sockfd int, backlog int) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.Listen(sockfd)
 }
 
 // Accept accepts an incoming connection on a listening socket.
 func (nd *NetDev) Accept(sockfd int) (int, netip.AddrPort, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.Accept(sockfd, 30*time.Second)
 }
 
 // Send sends data on a connected socket.
 func (nd *NetDev) Send(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.Send(sockfd, buf, deadline)
 }
 
 // Recv receives data from a connected socket.
 func (nd *NetDev) Recv(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.Recv(sockfd, buf, deadline)
 }
 
 // Close closes a socket.
 func (nd *NetDev) Close(sockfd int) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.Close(sockfd)
 }
 
 // SetSockOpt sets socket options.
 func (nd *NetDev) SetSockOpt(sockfd int, level int, opt int, value interface{}) error {
-	// Most options are no-ops on bare metal
 	return nil
 }
 
 // Ping sends an ICMP echo request.
 func (nd *NetDev) Ping(ip netip.Addr) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.SendPing(ip)
 }
 
 // PingResult returns true if a ping reply was received.
 func (nd *NetDev) PingResult() bool {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.PingResult()
 }
 
 // DHCP starts DHCP address acquisition.
 func (nd *NetDev) DHCP() error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.DHCPStart()
 }
 
 // WaitDHCP blocks until DHCP is bound or timeout.
 func (nd *NetDev) WaitDHCP(timeout time.Duration) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.WaitDHCP(timeout)
 }
 
 // NTPSync queries an NTP server and returns the current wall-clock time.
 func (nd *NetDev) NTPSync(server netip.Addr, timeout time.Duration) (time.Time, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.stack.NTPSync(server, timeout)
 }
 
 // SetStatusHandler registers a callback for network status changes.
+// The callback may safely call other NetDev methods (e.g. Addr).
 func (nd *NetDev) SetStatusHandler(fn func(Event)) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	nd.statusFn = fn
 }
 
@@ -155,6 +191,8 @@ func (nd *NetDev) SetStatusHandler(fn func(Event)) {
 // at a time — it never blocks. On link loss, reconnection starts
 // automatically on the next Poll call.
 func (nd *NetDev) EnableAutoConnect(ssid string, opts JoinOptions) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	nd.autoSSID = ssid
 	nd.autoOpts = opts
 	nd.autoConn = true
@@ -165,13 +203,18 @@ func (nd *NetDev) EnableAutoConnect(ssid string, opts JoinOptions) {
 
 // Connected returns true if WiFi is associated and DHCP is bound.
 func (nd *NetDev) Connected() bool {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
 	return nd.connSt == connUp
 }
 
 // Poll drives the network stack. Must be called regularly.
 // When auto-connect is enabled, Poll also advances the non-blocking
-// connection state machine (join → DHCP → connected).
+// connection state machine (join -> DHCP -> connected).
 func (nd *NetDev) Poll() error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+
 	err := nd.stack.Poll()
 
 	if nd.autoConn {
@@ -181,9 +224,87 @@ func (nd *NetDev) Poll() error {
 	return err
 }
 
+// Device wrapper methods — serialize Device access through the
+// same mutex to prevent concurrent SPI bus access on dual-core.
+
+// GPIOSet sets a CYW43439 wireless GPIO pin.
+// On Pico W, GPIO0 is the user LED.
+func (nd *NetDev) GPIOSet(wlGPIO uint8, value bool) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.GPIOSet(wlGPIO, value)
+}
+
+// WriteHCI sends an HCI packet to the BT controller via the ring buffer.
+func (nd *NetDev) WriteHCI(b []byte) (int, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.WriteHCI(b)
+}
+
+// ReadHCI reads an HCI packet from the BT controller's ring buffer.
+func (nd *NetDev) ReadHCI(b []byte) (int, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.ReadHCI(b)
+}
+
+// BufferedHCI returns the number of HCI bytes available to read.
+func (nd *NetDev) BufferedHCI() int {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.BufferedHCI()
+}
+
+// IsLinkUp returns true if the WiFi link is established.
+func (nd *NetDev) IsLinkUp() bool {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.IsLinkUp()
+}
+
+// BTEnabled returns true if Bluetooth is initialized.
+func (nd *NetDev) BTEnabled() bool {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.BTEnabled()
+}
+
+// HardwareAddr returns the device MAC address.
+func (nd *NetDev) HardwareAddr() [6]byte {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.HardwareAddr()
+}
+
+// StartJoin sends WiFi join ioctls without waiting for the link.
+func (nd *NetDev) StartJoin(ssid string, opts JoinOptions) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.StartJoin(ssid, opts)
+}
+
+// Join connects to a WiFi network. Blocks until connected or timeout.
+func (nd *NetDev) Join(ssid string, opts JoinOptions) error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.Join(ssid, opts)
+}
+
+// Disconnect disconnects from the current network.
+func (nd *NetDev) Disconnect() error {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.Disconnect()
+}
+
+// notify calls the status callback. Temporarily releases the mutex so
+// the callback may safely call other NetDev methods (e.g. Addr).
 func (nd *NetDev) notify(e Event) {
 	if nd.statusFn != nil {
+		nd.mu.Unlock()
 		nd.statusFn(e)
+		nd.mu.Lock()
 	}
 }
 

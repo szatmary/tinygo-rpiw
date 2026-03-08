@@ -21,16 +21,17 @@ var (
 func main() {
 	// Initialize the CYW43439
 	dev := &wifi.Device{}
-	if err := dev.Init(wifi.Config{
-		// Firmware and CLM will be embedded - see firmware_embed.go
-	}); err != nil {
+	if err := dev.Init(wifi.DefaultConfig()); err != nil {
 		panic("wifi init: " + err.Error())
 	}
 
 	fmt.Println("WiFi initialized, connecting...")
 
+	// Create network device (thread-safe wrapper)
+	nd := wifi.NewNetDev(dev)
+
 	// Connect to WiFi
-	if err := dev.Join(ssid, wifi.JoinOptions{
+	if err := nd.Join(ssid, wifi.JoinOptions{
 		Auth:       wifi.AuthWPA2PSK,
 		Passphrase: pass,
 	}); err != nil {
@@ -38,12 +39,11 @@ func main() {
 	}
 
 	fmt.Println("WiFi connected!")
-	mac := dev.HardwareAddr()
+	mac := nd.HardwareAddr()
 	fmt.Printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
 
-	// Create network device and start DHCP
-	nd := wifi.NewNetDev(dev)
+	// Start DHCP
 	if err := nd.DHCP(); err != nil {
 		panic("dhcp start: " + err.Error())
 	}

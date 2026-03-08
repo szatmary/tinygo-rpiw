@@ -303,10 +303,11 @@ func (s *Stack) sendTCP(sock *Socket, dstMAC [6]byte, flags uint8, payloadLen in
 	buf[19] = 0
 
 	if flags&tcpSYN != 0 {
+		mss := uint16(tcpMaxSegSize)
 		buf[20] = tcpOptionMSS
 		buf[21] = 4
-		buf[22] = 0x05 // tcpMaxSegSize >> 8
-		buf[23] = 0xB4 // tcpMaxSegSize & 0xFF
+		buf[22] = byte(mss >> 8)
+		buf[23] = byte(mss)
 	}
 
 	totalLen := hdrLen + payloadLen

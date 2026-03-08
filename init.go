@@ -1,15 +1,18 @@
 package tinygorpiw
 
 import (
+	"compress/zlib"
 	"errors"
+	"io"
+	"strings"
 	"time"
 	"unsafe"
 )
 
 type Config struct {
-	Firmware string // WiFi firmware (or combined WiFi+BT firmware)
-	CLM      string // CLM data
-	BTFirmware string // Optional: standalone BT firmware (Intel HEX format)
+	Firmware   string // WiFi+BT firmware (zlib-compressed)
+	CLM        string // CLM data (zlib-compressed)
+	BTFirmware string // Optional: BT firmware (zlib-compressed)
 }
 
 func (d *Device) Init(cfg Config) error {
@@ -92,7 +95,7 @@ func (d *Device) Init(cfg Config) error {
 		return errFirmware
 	}
 	println("  [init] loading firmware...")
-	if err := d.bp_writestring(0, cfg.Firmware); err != nil {
+	if err := d.bp_writezlib(0, cfg.Firmware); err != nil {
 		return err
 	}
 	println("  [init] firmware loaded")
@@ -170,7 +173,11 @@ func (d *Device) Init(cfg Config) error {
 	// 17. Init Bluetooth (if firmware provided)
 	if len(cfg.BTFirmware) > 0 {
 		println("  [init] loading BT firmware...")
-		if err := d.btInit(cfg.BTFirmware); err != nil {
+		btFW, err := decompressZlib(cfg.BTFirmware)
+		if err != nil {
+			return err
+		}
+		if err := d.btInit(string(btFW)); err != nil {
 			return err
 		}
 		d.btEnabled = true
@@ -179,7 +186,11 @@ func (d *Device) Init(cfg Config) error {
 
 	// 18. Init control (CLM, country, MAC, events)
 	if len(cfg.CLM) > 0 {
-		if err := d.initControl(cfg.CLM); err != nil {
+		clmData, err := decompressZlib(cfg.CLM)
+		if err != nil {
+			return err
+		}
+		if err := d.initControl(string(clmData)); err != nil {
 			return err
 		}
 	}
@@ -219,14 +230,22 @@ func (d *Device) initControl(clm string) error {
 	println("  [init] MAC address read")
 
 	// Disable TX glomming
-	d.setIovarU32("bus:txglom", 0)
+	if err := d.setIovarU32("bus:txglom", 0); err != nil {
+		return err
+	}
 
 	// Set antenna to chip antenna
-	d.setIoctl32(wlcSetAntdiv, 0, 0)
+	if err := d.setIoctl32(wlcSetAntdiv, 0, 0); err != nil {
+		return err
+	}
 
 	// AMPDU settings
-	d.setIovarU32("ampdu_ba_wsize", 8)
-	d.setIovarU32("ampdu_mpdu", 4)
+	if err := d.setIovarU32("ampdu_ba_wsize", 8); err != nil {
+		return err
+	}
+	if err := d.setIovarU32("ampdu_mpdu", 4); err != nil {
+		return err
+	}
 
 	// Set event mask
 	if err := d.setEventMask(); err != nil {
@@ -241,8 +260,12 @@ func (d *Device) initControl(clm string) error {
 	time.Sleep(100 * time.Millisecond)
 
 	// Set G-mode (auto) and band (any)
-	d.setIoctl32(wlcSetGmode, 0, 1)
-	d.setIoctl32(wlcSetBand, 0, 0)
+	if err := d.setIoctl32(wlcSetGmode, 0, 1); err != nil {
+		return err
+	}
+	if err := d.setIoctl32(wlcSetBand, 0, 0); err != nil {
+		return err
+	}
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -338,6 +361,46 @@ func (d *Device) setEventMask() error {
 		buf[4+ev/8] |= 1 << (ev % 8)
 	}
 	return d.setIovar("bsscfg:event_msgs", buf[:])
+}
+
+// bp_writezlib decompresses zlib data and streams it to the backplane
+// in 64-byte chunks. The zlib reader uses ~40KB of transient RAM for
+// the deflate window; this is freed after init completes.
+func (d *Device) bp_writezlib(addr uint32, compressed string) error {
+	r, err := zlib.NewReader(strings.NewReader(compressed))
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	var chunk [64]byte
+	for {
+		n, readErr := r.Read(chunk[:])
+		if n > 0 {
+			if err := d.bp_write(addr, chunk[:n]); err != nil {
+				return err
+			}
+			addr += uint32(n)
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return readErr
+		}
+	}
+	return nil
+}
+
+// decompressZlib decompresses zlib data to a byte slice.
+// Only used for small payloads (CLM ~1KB, BT firmware ~6KB).
+func decompressZlib(compressed string) ([]byte, error) {
+	r, err := zlib.NewReader(strings.NewReader(compressed))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
 }
 
 const nvramData = "manfid=0x2d0\x00" +

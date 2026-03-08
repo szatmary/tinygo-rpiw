@@ -240,8 +240,10 @@ func (d *Device) handleControl(payload []byte) error {
 			dataEnd = len(payload)
 		}
 		if dataEnd > dataStart {
-			// Copy into _iovarBuf so response outlives rxBuf reuse
-			respBuf := d.iovarBytes()
+			// Copy response into rxBuf (already fully consumed at this point).
+			// This avoids aliasing _iovarBuf which is used as scratch by
+			// setIovar/getIovar/setBsscfgIovar32.
+			respBuf := unsafe.Slice((*byte)(unsafe.Pointer(&d.rxBuf[0])), len(d.rxBuf)*4)
 			n := copy(respBuf, payload[dataStart:dataEnd])
 			d.ioctlRespBuf = respBuf[:n]
 		}

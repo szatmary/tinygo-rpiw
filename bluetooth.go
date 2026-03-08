@@ -142,9 +142,15 @@ func (d *Device) btInitBuffers() error {
 		return errBTZeroAddr
 	}
 	d.btaddr = addr
-	d.bp_write32(addr+btsdioOffsetHost2BTIn, 0)
-	d.bp_write32(addr+btsdioOffsetHost2BTOut, 0)
-	d.bp_write32(addr+btsdioOffsetBT2HostIn, 0)
+	if err = d.bp_write32(addr+btsdioOffsetHost2BTIn, 0); err != nil {
+		return err
+	}
+	if err = d.bp_write32(addr+btsdioOffsetHost2BTOut, 0); err != nil {
+		return err
+	}
+	if err = d.bp_write32(addr+btsdioOffsetBT2HostIn, 0); err != nil {
+		return err
+	}
 	return d.bp_write32(addr+btsdioOffsetBT2HostOut, 0)
 }
 
@@ -211,16 +217,21 @@ func (d *Device) WriteHCI(b []byte) (int, error) {
 		return 0, errBTNotEnabled
 	}
 
-	// Build BTSDIO header: 3-byte length (of payload) + data
-	cmdLen := len(b)
-	alignBufLen := ((cmdLen + 4) + 3) &^ 3 // 4-byte header + data, aligned
-
-	buf := d.iovarBytes()[:256]
-	if cmdLen > len(buf)-3 {
+	// BTSDIO header: 3-byte length (payload only, excludes type byte) + data
+	// Per pico-sdk cybt_shared_bus.c, length field = HCI payload without type.
+	// b[0] = HCI type, b[1:] = HCI payload
+	if len(b) < 1 {
 		return 0, errBTHCITooLarge
 	}
-	buf[0] = byte(cmdLen)
-	buf[1] = byte(cmdLen >> 8)
+	payloadLen := len(b) - 1 // exclude type byte
+	alignBufLen := ((payloadLen + 4) + 3) &^ 3
+
+	buf := d.iovarBytes()[:256]
+	if len(b) > len(buf)-3 {
+		return 0, errBTHCITooLarge
+	}
+	buf[0] = byte(payloadLen)
+	buf[1] = byte(payloadLen >> 8)
 	buf[2] = 0
 	copy(buf[3:], b)
 

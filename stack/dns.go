@@ -40,8 +40,7 @@ func (d *dnsResolver) Resolve(name string, timeout time.Duration) (netip.Addr, e
 	}
 
 	// Try up to 2 times (initial + 1 retry)
-	for attempt := range 2 {
-		_ = attempt
+	for range 2 {
 		if err := d.stack.sendUDP(dnsPort+1, dnsPort, d.stack.dnsServer, queryBuf[:queryLen]); err != nil {
 			d.active = false
 			return netip.Addr{}, err
@@ -153,6 +152,9 @@ func (d *dnsResolver) buildQuery(name string, buf []byte) int {
 
 	// Question: encode domain name
 	i = encodeDNSName(buf, i, name)
+	if i < 0 {
+		return 0
+	}
 
 	// QTYPE: A (1)
 	buf[i] = 0x00
@@ -167,13 +169,16 @@ func (d *dnsResolver) buildQuery(name string, buf []byte) int {
 }
 
 // encodeDNSName encodes a domain name into DNS wire format at buf[offset:].
-// Returns the new offset.
+// Returns the new offset, or -1 if the name doesn't fit in buf.
 func encodeDNSName(buf []byte, offset int, name string) int {
 	start := 0
 	for i := 0; i <= len(name); i++ {
 		if i == len(name) || name[i] == '.' {
 			labelLen := i - start
 			if labelLen > 0 {
+				if offset+1+labelLen >= len(buf) {
+					return -1
+				}
 				buf[offset] = byte(labelLen)
 				offset++
 				copy(buf[offset:], name[start:i])
@@ -181,6 +186,9 @@ func encodeDNSName(buf []byte, offset int, name string) int {
 			}
 			start = i + 1
 		}
+	}
+	if offset >= len(buf) {
+		return -1
 	}
 	buf[offset] = 0 // root label
 	offset++
