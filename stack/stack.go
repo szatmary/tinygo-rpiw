@@ -71,6 +71,9 @@ type Stack struct {
 	// mDNS responder
 	mdns mdnsResponder
 
+	// DHCP server (AP mode)
+	dhcpSrv dhcpServer
+
 	// ICMP ping state
 	pingRecvd bool
 
@@ -101,6 +104,7 @@ func New(dev NetIF) *Stack {
 	s.dns.init(s)
 	s.ntp.init(s)
 	s.mdns.init(s)
+	s.dhcpSrv.init(s)
 	return s
 }
 

@@ -19,6 +19,11 @@ func (s *Stack) handleUDP(srcIP, _ netip.Addr, payload []byte) {
 		return
 	}
 
+	if dstPort == 67 {
+		s.dhcpSrv.handlePacket(data)
+		return
+	}
+
 	if s.dns.active && srcPort == 53 {
 		s.dns.handleResponse(data)
 		return

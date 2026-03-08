@@ -41,6 +41,18 @@ type Config struct {
 	StatusFn   func(Event) // Connection status callback
 }
 
+// APConfig has everything needed to start a WiFi access point.
+type APConfig struct {
+	SSID       string
+	Passphrase string
+	Auth       Auth
+	Channel    uint8       // WiFi channel (1-13, default 6)
+	Hostname   string      // mDNS hostname (without ".local" suffix)
+	IP         netip.Addr  // AP IP address (default 192.168.4.1)
+	Subnet     netip.Addr  // Subnet mask (default 255.255.255.0)
+	StatusFn   func(Event) // Connection status callback
+}
+
 // startJoin sends the WiFi join ioctls and returns immediately without
 // waiting for the link to come up.
 func (d *Device) startJoin(cfg Config) error {
@@ -89,6 +101,64 @@ func (d *Device) startJoin(cfg Config) error {
 	binary.LittleEndian.PutUint32(ssidBuf[:4], uint32(len(cfg.SSID)))
 	copy(ssidBuf[4:], cfg.SSID)
 	return d.doIoctl(ioctlSET, wlcSetSSID, 0, ssidBuf[:4+len(cfg.SSID)])
+}
+
+// startAP configures the chip as an access point and starts beaconing.
+func (d *Device) startAP(cfg APConfig) error {
+	d.joinOK = false
+	d.authOK = false
+	d.keyExchangeOK = false
+	d.linkUp = false
+	d.apMode = true
+
+	// Set infrastructure mode to AP (0)
+	if err := d.setIoctl32(wlcSetInfra, 0, 0); err != nil {
+		return err
+	}
+	if err := d.setIoctl32(wlcSetAuth, 0, 0); err != nil {
+		return err
+	}
+
+	wsec, wpaAuth := authToWSec(cfg.Auth)
+	if err := d.setIoctl32(wlcSetWSec, 0, wsec); err != nil {
+		return err
+	}
+	if err := d.setIoctl32(wlcSetWPAAuth, 0, wpaAuth); err != nil {
+		return err
+	}
+
+	if cfg.Auth != AuthOpen && cfg.Passphrase != "" {
+		if err := d.setPassphrase(cfg.Passphrase); err != nil {
+			return err
+		}
+	}
+
+	// Set channel
+	ch := uint32(cfg.Channel)
+	if ch == 0 {
+		ch = 6
+	}
+	if err := d.setIovarU32("chanspec", 0x1000|ch); err != nil {
+		return err
+	}
+
+	// Bring interface up
+	if err := d.doIoctl(ioctlSET, wlcUP, 0, nil); err != nil {
+		return err
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Set SSID to start beaconing
+	var ssidBuf [36]byte
+	binary.LittleEndian.PutUint32(ssidBuf[:4], uint32(len(cfg.SSID)))
+	copy(ssidBuf[4:], cfg.SSID)
+	if err := d.doIoctl(ioctlSET, wlcSetSSID, 0, ssidBuf[:4+len(cfg.SSID)]); err != nil {
+		return err
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	d.linkUp = true
+	return nil
 }
 
 // setPassphrase sets the WPA/WPA2 passphrase via WLC_SET_WSEC_PMK ioctl.

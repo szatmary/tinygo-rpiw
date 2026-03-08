@@ -10,7 +10,8 @@ stack and auto-reconnects on link loss. Once connected, standard Go networking
 ## Features
 
 - CYW43439 WiFi (802.11n) and Bluetooth HCI over gSPI
-- Minimal TCP/IP stack: ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS, NTP
+- Station (client) and AP (access point) modes
+- Minimal TCP/IP stack: ARP, IPv4, ICMP, UDP, TCP, DHCP client/server, DNS, NTP
 - mDNS responder with DNS-SD service advertising
 - Zero-configuration API — one function call to get online
 - Thread-safe — all public methods are protected by a mutex
@@ -275,6 +276,63 @@ func (nd *NetDev) BufferedHCI() int
 
 Raw HCI transport for Bluetooth. The CYW43439 Bluetooth firmware is loaded
 during `Connect()`. Use these methods to send/receive HCI commands and events.
+
+## Access point mode
+
+`StartAP()` creates a WiFi access point with a built-in DHCP server. Clients
+that connect are automatically assigned IP addresses from a pool.
+
+```go
+func StartAP(cfg APConfig) (*NetDev, error)
+```
+
+### APConfig
+
+```go
+type APConfig struct {
+    SSID       string      // Network name to broadcast
+    Passphrase string      // WiFi password (empty = open network)
+    Auth       Auth        // Auth mode (default: WPA2-PSK when passphrase set)
+    Channel    uint8       // WiFi channel 1-13 (default: 6)
+    Hostname   string      // mDNS hostname (without ".local" suffix)
+    IP         netip.Addr  // AP IP address (default: 192.168.4.1)
+    Subnet     netip.Addr  // Subnet mask (default: 255.255.255.0)
+    StatusFn   func(Event) // Connection status callback
+}
+```
+
+### Example
+
+```go
+nd, err := wifi.StartAP(wifi.APConfig{
+    SSID:       "PicoW-AP",
+    Passphrase: "mypassword",
+    Hostname:   "picow",
+})
+if err != nil {
+    panic(err)
+}
+
+ip, _ := nd.Addr()
+fmt.Println("AP running on", ip) // 192.168.4.1
+
+// Serve HTTP to connected clients
+http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprintf(w, "Hello from Pico W! Clients: %d", nd.APClients())
+})
+http.ListenAndServe(":80", nil)
+```
+
+The DHCP server assigns addresses starting at `IP + 1` (e.g., 192.168.4.2,
+192.168.4.3, ...) up to 8 clients.
+
+### AP-specific methods
+
+```go
+func (nd *NetDev) APClients() int
+```
+
+Returns the number of WiFi clients currently connected to the AP.
 
 ## Static IP
 

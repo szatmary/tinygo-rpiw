@@ -346,7 +346,8 @@ func (d *Device) setEventMask() error {
 	// buf[0:4] = bsscfg index 0 (zero)
 	events := [...]uint32{
 		evtSetSSID, evtJoin, evtAuth, evtDeauth, evtDeauthInd,
-		evtAssoc, evtDisassoc, evtDisassocInd, evtLink, evtPSKSup,
+		evtAssoc, evtAssocInd, evtReassocInd, evtDisassoc, evtDisassocInd,
+		evtLink, evtPSKSup,
 	}
 	for _, ev := range events {
 		if ev/8 < 24 {

@@ -30,6 +30,13 @@ type Device struct {
 	authOK         bool
 	keyExchangeOK  bool
 	linkUp         bool
+	apMode         bool
+
+	// AP mode client tracking
+	apClients    [maxAPClients][6]byte
+	apClientCnt  uint8
+	apLastEvent  uint8 // 1=join, 2=leave
+	apLastClient [6]byte
 
 	ioctlPending  bool
 	ioctlRespID   uint16
@@ -48,6 +55,8 @@ type Device struct {
 	rxBuf      [2048 / 4]uint32
 	_iovarBuf  [2048 / 4]uint32
 }
+
+const maxAPClients = 8
 
 func (d *Device) IsLinkUp() bool        { return d.linkUp }
 func (d *Device) HardwareAddr() [6]byte { return d.mac }

@@ -274,3 +274,8 @@ func (s *Stack) SetHostname(name string) {
 func (s *Stack) AddService(svc Service) bool {
 	return s.mdns.AddService(svc)
 }
+
+// DHCPServerStart enables the DHCP server for AP mode.
+func (s *Stack) DHCPServerStart(gateway, subnet netip.Addr) {
+	s.dhcpSrv.Start(gateway, subnet)
+}

@@ -128,6 +128,8 @@ const (
 	evtDeauth      = 5
 	evtDeauthInd   = 6
 	evtAssoc       = 7
+	evtAssocInd    = 8
+	evtReassocInd  = 10
 	evtDisassoc    = 11
 	evtDisassocInd = 12
 	evtLink        = 16

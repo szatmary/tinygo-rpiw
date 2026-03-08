@@ -287,27 +287,38 @@ func (d *Device) processEvent(evt *EventMessage) {
 		d.authOK = evt.Status == evtStatusSuccess
 
 	case evtAssoc:
-		// Association complete
+		// Association complete (STA mode)
+
+	case evtAssocInd, evtReassocInd:
+		// AP mode: client associated
+		d.apAddClient(evt.Addr)
 
 	case evtDeauth, evtDeauthInd:
-		d.authOK = false
-		d.joinOK = false
-		d.keyExchangeOK = false
-		d.linkUp = false
+		if d.apMode {
+			d.apRemoveClient(evt.Addr)
+		} else {
+			d.authOK = false
+			d.joinOK = false
+			d.keyExchangeOK = false
+			d.linkUp = false
+		}
 
 	case evtDisassoc, evtDisassocInd:
-		d.joinOK = false
-		d.keyExchangeOK = false
-		d.linkUp = false
+		if d.apMode {
+			d.apRemoveClient(evt.Addr)
+		} else {
+			d.joinOK = false
+			d.keyExchangeOK = false
+			d.linkUp = false
+		}
 
 	case evtSetSSID:
 		d.joinOK = evt.Status == evtStatusSuccess
 
 	case evtLink:
 		if evt.Flags&1 != 0 {
-			// Link up
 			d.linkUp = true
-		} else {
+		} else if !d.apMode {
 			d.linkUp = false
 			d.joinOK = false
 			d.keyExchangeOK = false
@@ -316,6 +327,35 @@ func (d *Device) processEvent(evt *EventMessage) {
 	case evtPSKSup:
 		if evt.Status == 6 { // WLC_SUP_KEYED
 			d.keyExchangeOK = true
+		}
+	}
+}
+
+func (d *Device) apAddClient(mac [6]byte) {
+	// Check if already tracked
+	for i := range d.apClientCnt {
+		if d.apClients[i] == mac {
+			return
+		}
+	}
+	if d.apClientCnt < maxAPClients {
+		d.apClients[d.apClientCnt] = mac
+		d.apClientCnt++
+		d.apLastEvent = 1
+		d.apLastClient = mac
+	}
+}
+
+func (d *Device) apRemoveClient(mac [6]byte) {
+	for i := range d.apClientCnt {
+		if d.apClients[i] == mac {
+			// Swap with last
+			d.apClientCnt--
+			d.apClients[i] = d.apClients[d.apClientCnt]
+			d.apClients[d.apClientCnt] = [6]byte{}
+			d.apLastEvent = 2
+			d.apLastClient = mac
+			return
 		}
 	}
 }

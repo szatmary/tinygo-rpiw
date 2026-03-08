@@ -4,9 +4,13 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+	_ "unsafe"
 
 	"github.com/mszatmary/tinygorpiw/stack"
 )
+
+//go:linkname useNetdev net.useNetdev
+func useNetdev(dev interface{})
 
 // Connection state machine states.
 type connState uint8
@@ -63,9 +67,59 @@ func Connect(cfg Config) (*NetDev, error) {
 		s.SetHostname(cfg.Hostname)
 	}
 
-	registerNetdev(nd)
+	useNetdev(nd)
 
 	go nd.run()
+
+	return nd, nil
+}
+
+// StartAP initializes the CYW43439 in access point mode, starts a DHCP
+// server, and begins beaconing. Clients that connect are automatically
+// assigned IP addresses. Use cfg.StatusFn to be notified of events.
+func StartAP(cfg APConfig) (*NetDev, error) {
+	if cfg.Passphrase != "" && cfg.Auth == AuthOpen {
+		cfg.Auth = AuthWPA2PSK
+	}
+	if !cfg.IP.IsValid() {
+		cfg.IP = netip.AddrFrom4([4]byte{192, 168, 4, 1})
+	}
+	if !cfg.Subnet.IsValid() {
+		cfg.Subnet = netip.AddrFrom4([4]byte{255, 255, 255, 0})
+	}
+
+	dev := &Device{}
+	if err := dev.Init(); err != nil {
+		return nil, err
+	}
+
+	s := stack.New(dev)
+	dev.SetRecvHandler(s.HandleEth)
+
+	if err := dev.startAP(cfg); err != nil {
+		return nil, err
+	}
+
+	// Configure static IP for the AP
+	s.SetAddr(cfg.IP, cfg.IP, cfg.Subnet, cfg.IP)
+
+	// Start DHCP server
+	s.DHCPServerStart(cfg.IP, cfg.Subnet)
+
+	nd := &NetDev{
+		dev:      dev,
+		stack:    s,
+		statusFn: cfg.StatusFn,
+		connSt:   connUp,
+	}
+
+	if cfg.Hostname != "" {
+		s.SetHostname(cfg.Hostname)
+	}
+
+	useNetdev(nd)
+
+	go nd.runAP()
 
 	return nd, nil
 }
@@ -77,6 +131,20 @@ func (nd *NetDev) run() {
 		nd.mu.Lock()
 		nd.stack.Poll()
 		nd.maintainConnection()
+		nd.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// runAP is the background goroutine for AP mode.
+func (nd *NetDev) runAP() {
+	for {
+		nd.mu.Lock()
+		nd.stack.Poll()
+		// Check for AP client events
+		if nd.dev.apLastEvent != 0 {
+			nd.dev.apLastEvent = 0
+		}
 		nd.mu.Unlock()
 		time.Sleep(time.Millisecond)
 	}
@@ -260,6 +328,13 @@ func (nd *NetDev) HardwareAddr() [6]byte {
 	nd.mu.Lock()
 	defer nd.mu.Unlock()
 	return nd.dev.HardwareAddr()
+}
+
+// APClients returns the number of clients connected to the AP.
+func (nd *NetDev) APClients() int {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return int(nd.dev.apClientCnt)
 }
 
 // --- Device access (serialized through mutex for dual-core safety) ---
