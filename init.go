@@ -7,8 +7,9 @@ import (
 )
 
 type Config struct {
-	Firmware string
-	CLM      string
+	Firmware string // WiFi firmware (or combined WiFi+BT firmware)
+	CLM      string // CLM data
+	BTFirmware string // Optional: standalone BT firmware (Intel HEX format)
 }
 
 func (d *Device) Init(cfg Config) error {
@@ -165,7 +166,18 @@ func (d *Device) Init(cfg Config) error {
 	}
 
 	println("  [init] bus ready")
-	// 17. Init control (CLM, country, MAC, events)
+
+	// 17. Init Bluetooth (if firmware provided)
+	if len(cfg.BTFirmware) > 0 {
+		println("  [init] loading BT firmware...")
+		if err := d.btInit(cfg.BTFirmware); err != nil {
+			return err
+		}
+		d.btEnabled = true
+		println("  [init] BT ready")
+	}
+
+	// 18. Init control (CLM, country, MAC, events)
 	if len(cfg.CLM) > 0 {
 		if err := d.initControl(cfg.CLM); err != nil {
 			return err

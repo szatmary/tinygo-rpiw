@@ -37,14 +37,21 @@ type Device struct {
 
 	rcvEth func([]byte)
 
+	// Bluetooth HCI state
+	btEnabled   bool
+	btaddr      uint32 // ring buffer base address
+	b2hReadPtr  uint32 // BT→Host read pointer
+	h2bWritePtr uint32 // Host→BT write pointer
+
 	rwBuf      [2]uint32
 	txBuf      [2048 / 4]uint32
 	rxBuf      [2048 / 4]uint32
 	_iovarBuf  [2048 / 4]uint32
 }
 
-func (d *Device) IsLinkUp() bool       { return d.linkUp }
+func (d *Device) IsLinkUp() bool        { return d.linkUp }
 func (d *Device) HardwareAddr() [6]byte { return d.mac }
+func (d *Device) BTEnabled() bool       { return d.btEnabled }
 func (d *Device) SetRecvHandler(handler func([]byte)) { d.rcvEth = handler }
 
 // status returns the current gSPI bus status.
@@ -93,8 +100,70 @@ func (d *Device) bp_read8(addr uint32) (uint8, error) {
 func (d *Device) bp_write8(addr uint32, val uint8) error {
 	return d.backplane_writen(addr, uint32(val), 1)
 }
+func (d *Device) bp_read32(addr uint32) (uint32, error) {
+	return d.backplane_readn(addr, 4)
+}
 func (d *Device) bp_write32(addr, val uint32) error {
 	return d.backplane_writen(addr, val, 4)
+}
+
+// bp_read reads bulk data from the backplane.
+func (d *Device) bp_read(addr uint32, data []byte) error {
+	const maxTxSize = 64
+	var buf [maxTxSize/4 + 1]uint32
+	buf8 := (*[maxTxSize + 4]byte)(unsafe.Pointer(&buf[0]))
+
+	for len(data) > 0 {
+		windowOffset := addr & backplaneAddrMask
+		windowRemaining := uint32(0x8000) - windowOffset
+		length := uint32(len(data))
+		if length > maxTxSize {
+			length = maxTxSize
+		}
+		if length > windowRemaining {
+			length = windowRemaining
+		}
+		if err := d.backplane_setwindow(addr); err != nil {
+			return err
+		}
+		cmd := cmd_word(false, true, FuncBackplane, windowOffset, length)
+		d.spi.cmd_read(cmd, buf[:(length+3)/4+1])
+
+		// Skip first word (response delay padding)
+		copy(data[:length], buf8[4:4+length])
+		addr += length
+		data = data[length:]
+	}
+	return nil
+}
+
+// bp_write writes bulk data to the backplane.
+func (d *Device) bp_write(addr uint32, data []byte) error {
+	const maxTxSize = 64
+	buf := d._iovarBuf[:maxTxSize/4+1]
+	buf8 := (*[2048]byte)(unsafe.Pointer(&buf[0]))
+
+	for len(data) > 0 {
+		windowOffset := addr & backplaneAddrMask
+		windowRemaining := uint32(0x8000) - windowOffset
+		length := uint32(len(data))
+		if length > maxTxSize {
+			length = maxTxSize
+		}
+		if length > windowRemaining {
+			length = windowRemaining
+		}
+		copy(buf8[:length], data[:length])
+		if err := d.backplane_setwindow(addr); err != nil {
+			return err
+		}
+		cmd := cmd_word(true, true, FuncBackplane, windowOffset, length)
+		d.spi.cmd_write(cmd, buf[:(length+3)/4+1])
+
+		addr += length
+		data = data[length:]
+	}
+	return nil
 }
 
 func (d *Device) backplane_readn(addr, size uint32) (uint32, error) {

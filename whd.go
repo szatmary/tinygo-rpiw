@@ -138,3 +138,44 @@ const (
 	evtStatusSuccess = 0
 )
 
+// Bluetooth BTSDIO registers and constants
+const (
+	cywBTBaseAddress = 0x19000000
+	bt2wlanPwrupAddr = 0x640894
+	bt2wlanPwrupWake = 3
+
+	btCtrlRegAddr      = 0x18000c7c
+	hostCtrlRegAddr    = 0x18000d6c
+	wlanRAMBaseRegAddr = 0x18000d68
+
+	btsdioRegDataValidBitmask = 1 << 1
+	btsdioRegBTAwakeBitmask   = 1 << 8
+	btsdioRegWakeBTBitmask    = 1 << 17
+	btsdioRegSWReadyBitmask   = 1 << 24
+	btsdioRegFWReadyBitmask   = 1 << 24
+
+	btsdioFWBufSize          = 0x1000
+	btsdioOffsetHostWriteBuf = 0
+	btsdioOffsetHostReadBuf  = btsdioFWBufSize
+	btsdioOffsetHost2BTIn    = 0x2000
+	btsdioOffsetHost2BTOut   = 0x2004
+	btsdioOffsetBT2HostIn    = 0x2008
+	btsdioOffsetBT2HostOut   = 0x200C
+
+	// Bluetooth firmware Intel HEX addressing modes
+	btfwAddrModeExtended = 1
+	btfwAddrModeSegment  = 2
+	btfwAddrModeLinear32 = 3
+
+	// Bluetooth firmware Intel HEX line types
+	btfwHexLineTypeData                    = 0
+	btfwHexLineTypeEndOfData               = 1
+	btfwHexLineTypeExtendedSegmentAddress  = 2
+	btfwHexLineTypeExtendedAddress         = 4
+	btfwHexLineTypeAbsolute32BitAddress    = 5
+
+	// SDIO interrupt for BT
+	sdioIntStatus    = 0x20 // offset from sdioBaseAddress
+	iHMBFCChange     = 1 << 5
+)
+

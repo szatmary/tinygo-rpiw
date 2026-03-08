@@ -25,8 +25,12 @@ func main() {
 	// Do NOT configure it as an LED output. The Pico W user LED is
 	// controlled via CYW43439 GPIO0, only available after WiFi init.
 
-	// Give USB serial a moment to enumerate, but don't block on DTR
-	time.Sleep(2 * time.Second)
+	// Wait for USB serial (timeout after 5s so board works without terminal)
+	deadline := time.Now().Add(5 * time.Second)
+	for !machine.Serial.DTR() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
 
 	println("=== CYW43439 WiFi Test ===")
 
@@ -125,6 +129,8 @@ func handleCommand(line string) {
 		println("  ip             - Show IP address")
 		println("  httpget HOST [PATH] - HTTP GET request")
 		println("  ntp [SERVER]   - Sync time via NTP")
+		println("  btscan         - Scan for BLE devices")
+		println("  btinfo         - Show Bluetooth status")
 		println("  disconnect     - Disconnect WiFi")
 		println("  uptime         - Show uptime")
 	case "bustest":
@@ -161,6 +167,15 @@ func handleCommand(line string) {
 			server = parts[1]
 		}
 		cmdNTP(server)
+	case "btscan":
+		cmdBTScan()
+	case "btinfo":
+		if dev == nil {
+			println("Not initialized")
+		} else {
+			n := dev.BufferedHCI()
+			fmt.Printf("BT enabled: %v, HCI buffered: %d\n", dev.BTEnabled(), n)
+		}
 	case "ping":
 		if len(parts) < 2 {
 			println("Usage: ping <ip>")
@@ -194,8 +209,8 @@ func cmdInit() {
 	start := time.Now()
 
 	dev = &wifi.Device{}
-	cfg := wifi.DefaultConfig()
-	fmt.Printf("[init] Firmware=%d bytes CLM=%d bytes\n", len(cfg.Firmware), len(cfg.CLM))
+	cfg := wifi.DefaultBluetoothConfig()
+	fmt.Printf("[init] Firmware=%d bytes CLM=%d bytes BT=%d bytes\n", len(cfg.Firmware), len(cfg.CLM), len(cfg.BTFirmware))
 
 	println("[init] Calling dev.Init()...")
 	if err := dev.Init(cfg); err != nil {
@@ -404,6 +419,196 @@ func cmdPing(ipStr string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	println("[ping] Timeout - no reply")
+}
+
+func cmdBTScan() {
+	if dev == nil || !dev.BTEnabled() {
+		println("BT not initialized")
+		return
+	}
+
+	// HCI Reset
+	println("[btscan] Resetting HCI...")
+	if err := hciSendCmd(0x0C03, nil); err != nil {
+		fmt.Printf("[btscan] Reset send: %s\n", err.Error())
+		return
+	}
+	if err := hciWaitCmdComplete(0x0C03, 2*time.Second); err != nil {
+		fmt.Printf("[btscan] Reset: %s\n", err.Error())
+		return
+	}
+
+	// LE Set Scan Parameters: active scan, 60ms interval, 30ms window
+	println("[btscan] Setting scan params...")
+	scanParams := [7]byte{
+		0x01,       // active scan
+		0x60, 0x00, // interval: 96 * 0.625ms = 60ms
+		0x30, 0x00, // window: 48 * 0.625ms = 30ms
+		0x00, // own address: public
+		0x00, // filter: accept all
+	}
+	if err := hciSendCmd(0x200B, scanParams[:]); err != nil {
+		fmt.Printf("[btscan] Params send: %s\n", err.Error())
+		return
+	}
+	if err := hciWaitCmdComplete(0x200B, 2*time.Second); err != nil {
+		fmt.Printf("[btscan] Params: %s\n", err.Error())
+		return
+	}
+
+	// LE Set Scan Enable
+	println("[btscan] Starting scan (10s)...")
+	scanEnable := [2]byte{0x01, 0x01} // enable, filter duplicates
+	if err := hciSendCmd(0x200C, scanEnable[:]); err != nil {
+		fmt.Printf("[btscan] Enable send: %s\n", err.Error())
+		return
+	}
+	if err := hciWaitCmdComplete(0x200C, 2*time.Second); err != nil {
+		fmt.Printf("[btscan] Enable: %s\n", err.Error())
+		return
+	}
+
+	// Read advertising reports for 10 seconds
+	var hciBuf [256]byte
+	count := 0
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if nd != nil {
+			nd.Poll()
+		}
+		if dev.BufferedHCI() > 0 {
+			n, err := dev.ReadHCI(hciBuf[:])
+			if err != nil {
+				continue
+			}
+			if n >= 2 && hciBuf[0] == 0x04 && hciBuf[1] == 0x3E {
+				// LE Meta Event
+				parseAdvReport(hciBuf[:n], &count)
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Disable scan
+	scanDisable := [2]byte{0x00, 0x00}
+	hciSendCmd(0x200C, scanDisable[:])
+	hciWaitCmdComplete(0x200C, 2*time.Second)
+
+	fmt.Printf("[btscan] Done, %d devices found\n", count)
+}
+
+// hciSendCmd sends an HCI command packet.
+func hciSendCmd(opcode uint16, params []byte) error {
+	var buf [64]byte
+	buf[0] = 0x01 // HCI command
+	buf[1] = byte(opcode)
+	buf[2] = byte(opcode >> 8)
+	buf[3] = byte(len(params))
+	copy(buf[4:], params)
+	_, err := dev.WriteHCI(buf[:4+len(params)])
+	return err
+}
+
+// hciWaitCmdComplete waits for a Command Complete event matching the opcode.
+func hciWaitCmdComplete(opcode uint16, timeout time.Duration) error {
+	var buf [256]byte
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if nd != nil {
+			nd.Poll()
+		}
+		if dev.BufferedHCI() > 0 {
+			n, err := dev.ReadHCI(buf[:])
+			if err != nil {
+				continue
+			}
+			// Event packet: [0x04, event_code, param_len, ...]
+			// Command Complete: event=0x0E, params: [num_cmds, opcode_lo, opcode_hi, status]
+			if n >= 6 && buf[0] == 0x04 && buf[1] == 0x0E {
+				evtOpcode := uint16(buf[4]) | uint16(buf[5])<<8
+				if evtOpcode == opcode {
+					status := buf[6]
+					if status != 0 {
+						fmt.Printf("[hci] cmd 0x%04x status=%d\n", opcode, status)
+					}
+					return nil
+				}
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return fmt.Errorf("hci cmd 0x%04x timeout", opcode)
+}
+
+// parseAdvReport parses LE Advertising Report events.
+func parseAdvReport(data []byte, count *int) {
+	// data: [0x04, 0x3E, param_len, subevent, ...]
+	if len(data) < 5 {
+		return
+	}
+	subevent := data[3]
+	if subevent != 0x02 {
+		return
+	}
+	numReports := int(data[4])
+	pos := 5
+	for i := 0; i < numReports && pos < len(data); i++ {
+		if pos+9 > len(data) {
+			break
+		}
+		// evtType := data[pos]
+		addrType := data[pos+1]
+		addr := data[pos+2 : pos+8]
+		dataLen := int(data[pos+8])
+		pos += 9
+
+		// Parse name from AD structures
+		name := ""
+		if pos+dataLen <= len(data) {
+			adData := data[pos : pos+dataLen]
+			name = parseADName(adData)
+		}
+		pos += dataLen
+
+		rssi := int8(0)
+		if pos < len(data) {
+			rssi = int8(data[pos])
+			pos++
+		}
+
+		typeStr := "pub"
+		if addrType == 1 {
+			typeStr = "rnd"
+		}
+		*count++
+		fmt.Printf("  %02x:%02x:%02x:%02x:%02x:%02x (%s) RSSI:%d",
+			addr[5], addr[4], addr[3], addr[2], addr[1], addr[0],
+			typeStr, rssi)
+		if name != "" {
+			fmt.Printf(" %s", name)
+		}
+		println()
+	}
+}
+
+// parseADName extracts the Complete/Short Local Name from AD structures.
+func parseADName(ad []byte) string {
+	for i := 0; i < len(ad); {
+		if i+1 >= len(ad) {
+			break
+		}
+		length := int(ad[i])
+		if length == 0 || i+1+length > len(ad) {
+			break
+		}
+		adType := ad[i+1]
+		// 0x08 = Shortened Local Name, 0x09 = Complete Local Name
+		if adType == 0x08 || adType == 0x09 {
+			return string(ad[i+2 : i+1+length])
+		}
+		i += 1 + length
+	}
+	return ""
 }
 
 func cmdDisconnect() {
