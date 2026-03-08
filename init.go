@@ -358,7 +358,9 @@ func (d *Device) setEventMask() error {
 		evtAssoc, evtDisassoc, evtDisassocInd, evtLink, evtPSKSup,
 	}
 	for _, ev := range events {
-		buf[4+ev/8] |= 1 << (ev % 8)
+		if ev/8 < 24 {
+			buf[4+ev/8] |= 1 << (ev % 8)
+		}
 	}
 	return d.setIovar("bsscfg:event_msgs", buf[:])
 }

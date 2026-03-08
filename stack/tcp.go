@@ -128,14 +128,14 @@ func (s *Stack) tcpInput(sock *Socket,
 				}
 			}
 		}
-		if flags&tcpFIN != 0 && !tcp.finAcked {
+		if flags&tcpFIN != 0 && !tcp.finAcked && seqNum == tcp.ackNum {
 			tcp.ackNum = seqNum + 1
 			tcp.state = tcpTimeWait
 			s.sendTCPFlags(sock, tcpACK)
 		}
 
 	case tcpFinWait2:
-		if flags&tcpFIN != 0 {
+		if flags&tcpFIN != 0 && seqNum == tcp.ackNum {
 			tcp.ackNum = seqNum + 1
 			tcp.state = tcpTimeWait
 			tcp.retxTime = s.now().Add(tcpTimeWaitDur)
@@ -375,6 +375,7 @@ func (s *Stack) sendTCPReset(dstIP netip.Addr, dstPort, srcPort uint16, seqNum, 
 func (s *Stack) handleSYNOnListener(listener *Socket, srcIP netip.Addr, srcPort, dstPort uint16, seqNum uint32, mss uint16) {
 	fd, err := s.allocSocket()
 	if err != nil {
+		s.sendTCPReset(srcIP, srcPort, dstPort, seqNum, 0, tcpSYN)
 		return
 	}
 

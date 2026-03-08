@@ -1,7 +1,7 @@
 package tinygorpiw
 
 // CYW43439 register addresses and constants.
-// Matches soypat/cyw43439/whd and pico-sdk cyw43-driver.
+// Matches pico-sdk cyw43-driver.
 
 // SPI bus registers (Function 0)
 const (

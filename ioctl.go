@@ -194,7 +194,7 @@ func (d *Device) handleRxPacket(pkt []byte) error {
 		return nil // corrupted
 	}
 
-	// Update bus credits (with sanity check matching soypat/embassy-rs).
+	// Update bus credits (with sanity check matching embassy-rs).
 	if sdpcm.BusDataCredit > 0 {
 		max := sdpcm.BusDataCredit
 		if (max - d.sdpcmSeq) > 0x40 {

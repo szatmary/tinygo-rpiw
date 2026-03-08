@@ -17,7 +17,7 @@ type pioBus struct {
 }
 
 func initHardware() (cmdBus, outputPin, error) {
-	// Configure CS pin first (before power cycle, matching soypat/C SDK order)
+	// Configure CS pin first (before power cycle, matching C SDK order)
 	cs := configureCS()
 
 	// Configure power pin

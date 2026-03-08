@@ -59,7 +59,13 @@ func (d *Device) btInit(firmware string) error {
 // it to the BT processor memory via backplane.
 func (d *Device) btUploadFirmware(firmware string) error {
 	// Skip version string: 1-byte length + version + 1 padding byte
-	versionLen := firmware[0]
+	if len(firmware) < 3 {
+		return errFirmware
+	}
+	versionLen := int(firmware[0])
+	if versionLen+2 > len(firmware) {
+		return errFirmware
+	}
 	firmware = firmware[versionLen+2:]
 
 	// Use _iovarBuf as scratch for aligned writes
