@@ -101,6 +101,7 @@ const (
 	wlcSetGmode   = 110
 	wlcSetWSec    = 134
 	wlcSetBand    = 142
+	wlcSetPM      = 0x56
 	wlcSetWPAAuth = 165
 	wlcSetWsecPMK = 268
 )

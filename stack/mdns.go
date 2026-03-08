@@ -28,11 +28,19 @@ type Service struct {
 	TXT  []string // Key=value pairs (e.g., "c#=1", "sf=1")
 }
 
+// mdnsService is the internal representation with pre-computed FQDNs.
+type mdnsService struct {
+	svc      Service
+	svcFQDN  string // e.g. "_hap._tcp.local"
+	instFQDN string // e.g. "My Accessory._hap._tcp.local"
+}
+
 type mdnsResponder struct {
 	stack    *Stack
-	hostname string
-	services [maxServices]Service
+	hostFQDN string // e.g. "picow.local"
+	services [maxServices]mdnsService
 	numSvc   int
+	buf      [512]byte // shared response buffer
 }
 
 func (m *mdnsResponder) init(s *Stack) {
@@ -41,7 +49,7 @@ func (m *mdnsResponder) init(s *Stack) {
 
 // SetHostname enables the mDNS responder for "name.local".
 func (m *mdnsResponder) SetHostname(name string) {
-	m.hostname = name
+	m.hostFQDN = name + ".local"
 }
 
 // AddService registers a DNS-SD service for advertisement.
@@ -50,14 +58,18 @@ func (m *mdnsResponder) AddService(svc Service) bool {
 	if m.numSvc >= maxServices {
 		return false
 	}
-	m.services[m.numSvc] = svc
+	m.services[m.numSvc] = mdnsService{
+		svc:      svc,
+		svcFQDN:  svc.Type + ".local",
+		instFQDN: svc.Name + "." + svc.Type + ".local",
+	}
 	m.numSvc++
 	return true
 }
 
 // handleQuery processes an incoming mDNS query.
 func (m *mdnsResponder) handleQuery(_ netip.Addr, data []byte) {
-	if m.hostname == "" || !m.stack.localIP.IsValid() {
+	if m.hostFQDN == "" || !m.stack.localIP.IsValid() {
 		return
 	}
 	if len(data) < 12 {
@@ -96,7 +108,7 @@ func (m *mdnsResponder) handleQuery(_ netip.Addr, data []byte) {
 func (m *mdnsResponder) handleQuestion(data []byte, nameStart int, qtype uint16) {
 	// A record: hostname.local
 	if qtype == dnsTypeA || qtype == dnsTypeANY {
-		if matchNameStr(data, nameStart, m.hostname+".local") {
+		if matchNameStr(data, nameStart, m.hostFQDN) {
 			m.sendA()
 			return
 		}
@@ -110,32 +122,27 @@ func (m *mdnsResponder) handleQuestion(data []byte, nameStart int, qtype uint16)
 		}
 	}
 
-	// Check each registered service
+	// Check each registered service (no allocations — FQDNs are pre-computed)
 	for i := range m.numSvc {
-		svc := &m.services[i]
-		svcFQDN := svc.Type + ".local"              // e.g., _hap._tcp.local
-		instFQDN := svc.Name + "." + svc.Type + ".local" // e.g., My Accessory._hap._tcp.local
+		ms := &m.services[i]
 
-		// PTR: _hap._tcp.local → instance name
 		if qtype == dnsTypePTR || qtype == dnsTypeANY {
-			if matchNameStr(data, nameStart, svcFQDN) {
-				m.sendPTR(svc)
+			if matchNameStr(data, nameStart, ms.svcFQDN) {
+				m.sendPTR(ms)
 				return
 			}
 		}
 
-		// SRV: instance._hap._tcp.local → host + port
 		if qtype == dnsTypeSRV || qtype == dnsTypeANY {
-			if matchNameStr(data, nameStart, instFQDN) {
-				m.sendSRV(svc)
+			if matchNameStr(data, nameStart, ms.instFQDN) {
+				m.sendSRV(ms)
 				return
 			}
 		}
 
-		// TXT: instance._hap._tcp.local → key=value pairs
 		if qtype == dnsTypeTXT || qtype == dnsTypeANY {
-			if matchNameStr(data, nameStart, instFQDN) {
-				m.sendTXT(svc)
+			if matchNameStr(data, nameStart, ms.instFQDN) {
+				m.sendTXT(ms)
 				return
 			}
 		}
@@ -156,15 +163,13 @@ func matchNameStr(data []byte, offset int, target string) bool {
 		}
 		offset++
 
-		// Check separator: if we're not at the start, target should have a dot
 		if tpos > 0 {
 			if tpos >= len(target) || target[tpos] != '.' {
 				return false
 			}
-			tpos++ // skip the dot
+			tpos++
 		}
 
-		// Compare label bytes
 		if tpos+labelLen > len(target) {
 			return false
 		}
@@ -190,10 +195,8 @@ func matchNameStr(data []byte, offset int, target string) bool {
 	return false
 }
 
-// --- Response builders ---
+// --- Response builders (all use m.buf to avoid stack allocations) ---
 
-// writeHeader writes the mDNS response header and returns the offset after it.
-// anCount is the number of answer records.
 func writeHeader(buf []byte, anCount uint16) int {
 	buf[0] = 0x00 // ID = 0 for mDNS
 	buf[1] = 0x00
@@ -201,7 +204,7 @@ func writeHeader(buf []byte, anCount uint16) int {
 	buf[3] = 0x00
 	buf[4] = 0x00 // QDCOUNT=0
 	buf[5] = 0x00
-	buf[6] = byte(anCount >> 8) // ANCOUNT
+	buf[6] = byte(anCount >> 8)
 	buf[7] = byte(anCount)
 	buf[8] = 0x00 // NSCOUNT=0
 	buf[9] = 0x00
@@ -210,9 +213,6 @@ func writeHeader(buf []byte, anCount uint16) int {
 	return 12
 }
 
-// writeRRHeader writes the common part of a resource record (name, type, class, TTL)
-// and reserves space for RDLENGTH. Returns offset of the RDATA start, or -1.
-// The caller must fill in RDLENGTH at (returned offset - 2).
 func writeRRHeader(buf []byte, i int, name string, rrtype uint16, cacheFlush bool) int {
 	i = encodeDNSName(buf, i, name)
 	if i < 0 || i+10 > len(buf) {
@@ -228,52 +228,46 @@ func writeRRHeader(buf []byte, i int, name string, rrtype uint16, cacheFlush boo
 	buf[i] = byte(cls >> 8)
 	buf[i+1] = byte(cls)
 	i += 2
-	// TTL
 	buf[i] = 0
 	buf[i+1] = 0
 	buf[i+2] = byte(mdnsTTL >> 8)
 	buf[i+3] = byte(mdnsTTL)
 	i += 4
-	// RDLENGTH placeholder (2 bytes)
-	i += 2
+	i += 2 // RDLENGTH placeholder
 	return i
 }
 
 func (m *mdnsResponder) sendA() {
-	var buf [256]byte
-	i := writeHeader(buf[:], 1)
+	buf := m.buf[:]
+	i := writeHeader(buf, 1)
 
-	rdataStart := writeRRHeader(buf[:], i, m.hostname+".local", dnsTypeA, true)
+	rdataStart := writeRRHeader(buf, i, m.hostFQDN, dnsTypeA, true)
 	if rdataStart < 0 {
 		return
 	}
 
-	// RDATA: 4-byte IPv4 address
 	ip := m.stack.localIP.As4()
 	buf[rdataStart] = ip[0]
 	buf[rdataStart+1] = ip[1]
 	buf[rdataStart+2] = ip[2]
 	buf[rdataStart+3] = ip[3]
-	rdlen := 4
 
-	// Fill RDLENGTH
-	buf[rdataStart-2] = byte(rdlen >> 8)
-	buf[rdataStart-1] = byte(rdlen)
+	buf[rdataStart-2] = 0
+	buf[rdataStart-1] = 4
 
-	m.stack.sendUDP(mdnsPort, mdnsPort, mdnsAddr, buf[:rdataStart+rdlen])
+	m.stack.sendUDP(mdnsPort, mdnsPort, mdnsAddr, buf[:rdataStart+4])
 }
 
-func (m *mdnsResponder) sendPTR(svc *Service) {
-	var buf [512]byte
-	i := writeHeader(buf[:], 1)
+func (m *mdnsResponder) sendPTR(ms *mdnsService) {
+	buf := m.buf[:]
+	i := writeHeader(buf, 1)
 
-	rdataStart := writeRRHeader(buf[:], i, svc.Type+".local", dnsTypePTR, false)
+	rdataStart := writeRRHeader(buf, i, ms.svcFQDN, dnsTypePTR, false)
 	if rdataStart < 0 {
 		return
 	}
 
-	// RDATA: instance FQDN
-	rdEnd := encodeDNSName(buf[:], rdataStart, svc.Name+"."+svc.Type+".local")
+	rdEnd := encodeDNSName(buf, rdataStart, ms.instFQDN)
 	if rdEnd < 0 {
 		return
 	}
@@ -284,11 +278,11 @@ func (m *mdnsResponder) sendPTR(svc *Service) {
 	m.stack.sendUDP(mdnsPort, mdnsPort, mdnsAddr, buf[:rdEnd])
 }
 
-func (m *mdnsResponder) sendSRV(svc *Service) {
-	var buf [512]byte
-	i := writeHeader(buf[:], 1)
+func (m *mdnsResponder) sendSRV(ms *mdnsService) {
+	buf := m.buf[:]
+	i := writeHeader(buf, 1)
 
-	rdataStart := writeRRHeader(buf[:], i, svc.Name+"."+svc.Type+".local", dnsTypeSRV, true)
+	rdataStart := writeRRHeader(buf, i, ms.instFQDN, dnsTypeSRV, true)
 	if rdataStart < 0 {
 		return
 	}
@@ -297,17 +291,16 @@ func (m *mdnsResponder) sendSRV(svc *Service) {
 		return
 	}
 
-	// RDATA: priority(2) + weight(2) + port(2) + target
 	j := rdataStart
 	buf[j] = 0 // priority
 	buf[j+1] = 0
 	buf[j+2] = 0 // weight
 	buf[j+3] = 0
-	buf[j+4] = byte(svc.Port >> 8)
-	buf[j+5] = byte(svc.Port)
+	buf[j+4] = byte(ms.svc.Port >> 8)
+	buf[j+5] = byte(ms.svc.Port)
 	j += 6
 
-	j = encodeDNSName(buf[:], j, m.hostname+".local")
+	j = encodeDNSName(buf, j, m.hostFQDN)
 	if j < 0 {
 		return
 	}
@@ -319,18 +312,17 @@ func (m *mdnsResponder) sendSRV(svc *Service) {
 	m.stack.sendUDP(mdnsPort, mdnsPort, mdnsAddr, buf[:j])
 }
 
-func (m *mdnsResponder) sendTXT(svc *Service) {
-	var buf [512]byte
-	i := writeHeader(buf[:], 1)
+func (m *mdnsResponder) sendTXT(ms *mdnsService) {
+	buf := m.buf[:]
+	i := writeHeader(buf, 1)
 
-	rdataStart := writeRRHeader(buf[:], i, svc.Name+"."+svc.Type+".local", dnsTypeTXT, true)
+	rdataStart := writeRRHeader(buf, i, ms.instFQDN, dnsTypeTXT, true)
 	if rdataStart < 0 {
 		return
 	}
 
-	// RDATA: sequence of length-prefixed strings
 	j := rdataStart
-	for _, kv := range svc.TXT {
+	for _, kv := range ms.svc.TXT {
 		if j+1+len(kv) > len(buf) {
 			return
 		}
@@ -339,8 +331,7 @@ func (m *mdnsResponder) sendTXT(svc *Service) {
 		copy(buf[j:], kv)
 		j += len(kv)
 	}
-	// If no TXT records, write a single zero-length string
-	if len(svc.TXT) == 0 {
+	if len(ms.svc.TXT) == 0 {
 		if j >= len(buf) {
 			return
 		}
@@ -355,21 +346,19 @@ func (m *mdnsResponder) sendTXT(svc *Service) {
 	m.stack.sendUDP(mdnsPort, mdnsPort, mdnsAddr, buf[:j])
 }
 
-// sendServiceEnum responds to _services._dns-sd._udp.local PTR queries
-// with one PTR record per registered service type.
 func (m *mdnsResponder) sendServiceEnum() {
 	for i := range m.numSvc {
-		svc := &m.services[i]
+		ms := &m.services[i]
 
-		var buf [512]byte
-		j := writeHeader(buf[:], 1)
+		buf := m.buf[:]
+		j := writeHeader(buf, 1)
 
-		rdataStart := writeRRHeader(buf[:], j, "_services._dns-sd._udp.local", dnsTypePTR, false)
+		rdataStart := writeRRHeader(buf, j, "_services._dns-sd._udp.local", dnsTypePTR, false)
 		if rdataStart < 0 {
 			return
 		}
 
-		rdEnd := encodeDNSName(buf[:], rdataStart, svc.Type+".local")
+		rdEnd := encodeDNSName(buf, rdataStart, ms.svcFQDN)
 		if rdEnd < 0 {
 			return
 		}

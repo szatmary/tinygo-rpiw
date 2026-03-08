@@ -259,7 +259,7 @@ func (d *Device) initControl(clm string) error {
 	// Disable power management so unicast packets are not missed
 	var pmBuf [4]byte
 	pmBuf[0] = 0 // PM_NONE — disable power save
-	d.doIoctl(ioctlSET, 0x56, 0, pmBuf[:])
+	d.doIoctl(ioctlSET, wlcSetPM, 0, pmBuf[:])
 
 	// Enable mDNS multicast MAC filter (01:00:5E:00:00:FB) so the chip
 	// passes mDNS packets through. Harmless if mDNS is never used.
