@@ -4,13 +4,10 @@ import (
 	"net/netip"
 	"sync"
 	"time"
-	_ "unsafe"
 
 	"github.com/mszatmary/tinygorpiw/stack"
+	"tinygo.org/x/drivers/netdev"
 )
-
-//go:linkname useNetdev net.useNetdev
-func useNetdev(dev interface{})
 
 // Connection state machine states.
 type connState uint8
@@ -67,7 +64,7 @@ func Connect(cfg Config) (*NetDev, error) {
 		s.SetHostname(cfg.Hostname)
 	}
 
-	useNetdev(nd)
+	netdev.UseNetdev(nd)
 
 	go nd.run()
 
@@ -117,7 +114,7 @@ func StartAP(cfg APConfig) (*NetDev, error) {
 		s.SetHostname(cfg.Hostname)
 	}
 
-	useNetdev(nd)
+	netdev.UseNetdev(nd)
 
 	go nd.runAP()
 
