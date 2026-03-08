@@ -1,0 +1,9 @@
+# WiFi credentials
+cmd/test/config.go
+
+# Build artifacts
+*.elf
+*.uf2
+
+# OS files
+.DS_Store

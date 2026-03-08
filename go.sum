@@ -1,0 +1,4 @@
+github.com/tinygo-org/pio v0.2.0 h1:vo3xa6xDZ2rVtxrks/KcTZHF3qq4lyWOntvEvl2pOhU=
+github.com/tinygo-org/pio v0.2.0/go.mod h1:LU7Dw00NJ+N86QkeTGjMLNkYcEYMor6wTDpTCu0EaH8=
+golang.org/x/sys v0.41.0 h1:Ivj+2Cp/ylzLiEU89QhWblYnOE9zerudt9Ftecq2C6k=
+golang.org/x/sys v0.41.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=

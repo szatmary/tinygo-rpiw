@@ -1,0 +1,7 @@
+package main
+
+// WiFi credentials — copy this file to config.go and fill in your values.
+var (
+	wifiSSID = "YourSSID"
+	wifiPass = "YourPassword"
+)
