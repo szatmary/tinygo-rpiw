@@ -219,6 +219,49 @@ func (nd *NetDev) SetSockOpt(sockfd int, level int, opt int, value interface{}) 
 	return nil
 }
 
+// AddService registers a DNS-SD service for mDNS advertisement.
+// Returns false if the service table is full.
+func (nd *NetDev) AddService(svc stack.Service) bool {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.stack.AddService(svc)
+}
+
+// Ping sends an ICMP echo request and waits for a reply.
+// Returns true if a reply was received within the timeout.
+func (nd *NetDev) Ping(addr netip.Addr, timeout time.Duration) bool {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	if err := nd.stack.SendPing(addr); err != nil {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		nd.stack.Poll()
+		if nd.stack.PingResult() {
+			return true
+		}
+		nd.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		nd.mu.Lock()
+	}
+	return false
+}
+
+// NTPTime queries an NTP server and returns the current wall-clock time.
+func (nd *NetDev) NTPTime(server netip.Addr, timeout time.Duration) (time.Time, error) {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.stack.NTPSync(server, timeout)
+}
+
+// HardwareAddr returns the WiFi MAC address.
+func (nd *NetDev) HardwareAddr() [6]byte {
+	nd.mu.Lock()
+	defer nd.mu.Unlock()
+	return nd.dev.HardwareAddr()
+}
+
 // --- Device access (serialized through mutex for dual-core safety) ---
 
 // GPIOSet sets a CYW43439 wireless GPIO pin.

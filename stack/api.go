@@ -268,3 +268,9 @@ func (s *Stack) NTPSync(server netip.Addr, timeout time.Duration) (time.Time, er
 func (s *Stack) SetHostname(name string) {
 	s.mdns.SetHostname(name)
 }
+
+// AddService registers a DNS-SD service for mDNS advertisement.
+// Returns false if the service table is full.
+func (s *Stack) AddService(svc Service) bool {
+	return s.mdns.AddService(svc)
+}

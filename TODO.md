@@ -1,9 +1,7 @@
-expose internal state via callbacks. we need to kno when we connect/disconnect
-
-re connect attempts should loop foever, nover stop reconnecting on disconnect
+reconnect attempts should loop foever, nover stop reconnecting on disconnect
 Watchdog timer on connection failures?
+can we eliminate sleeps? does the chip do inturupts?
 
-ntp client done. update thr rtc with it
 
 add blutooth stack
 - L2CAP (logical link control)
@@ -11,4 +9,12 @@ add blutooth stack
 - BLE HOGP (HID Over GATT Profile) for wireless keyboard/mouse/gamepad
 - HCI transport layer done (WriteHCI/ReadHCI), need upper layers
 
-can we eliminate sleeps? does th echip do inturupts?
+
+
+mDNS responder advertising _hap._tcp with the HAP TXT
+  records (c#, ff, id, md, pv, s#, sf, ci)
+
+
+  1. BLE stack — L2CAP → ATT → GATT (tinygo-rpiw has HCI
+  transport via WriteHCI/ReadHCI but the upper layers are
+  TODO)
