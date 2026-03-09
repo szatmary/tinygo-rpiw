@@ -146,9 +146,6 @@ func (d *dhcpServer) sendACK(xid [4]byte, clientMAC [6]byte, ip netip.Addr) {
 // sendReply builds and sends a DHCP server reply (offer or ACK).
 func (d *dhcpServer) sendReply(msgType uint8, xid [4]byte, clientMAC [6]byte, clientIP netip.Addr) {
 	var buf [300]byte
-	for i := range buf {
-		buf[i] = 0
-	}
 
 	buf[0] = 2 // op: BOOTREPLY
 	buf[1] = 1 // htype: Ethernet

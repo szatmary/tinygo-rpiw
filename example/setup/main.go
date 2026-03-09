@@ -10,7 +10,7 @@
 package main
 
 import (
-	"encoding/json"
+	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"machine"
@@ -20,22 +20,15 @@ import (
 	wifi "github.com/mszatmary/tinygorpiw"
 )
 
+// Flash layout: magic(4) + crc32(4) + ssid_len(1) + ssid + pass_len(1) + pass
 const (
 	configMagic = 0x57494649 // "WIFI"
-	configSize  = 4096       // one erase block
+	configSize  = 256        // one write block
 )
 
-// config is the WiFi configuration stored in flash.
 type config struct {
-	SSID string `json:"ssid"`
-	Pass string `json:"pass"`
-}
-
-// configBlock is the flash layout: magic + crc32 + json payload.
-type configBlock struct {
-	Magic   uint32 `json:"_m"`
-	CRC     uint32 `json:"_c"`
-	Payload config `json:"p"`
+	SSID string
+	Pass string
 }
 
 func main() {
@@ -58,73 +51,75 @@ func main() {
 	}
 }
 
-// loadConfig reads and validates the config from the last flash sector.
+// loadConfig reads and validates the config from flash.
+// Layout: magic(4) + crc32(4) + ssid_len(1) + ssid + pass_len(1) + pass
 func loadConfig() (config, bool) {
 	var buf [configSize]byte
-	_, err := machine.Flash.ReadAt(buf[:], 0)
-	if err != nil {
+	if _, err := machine.Flash.ReadAt(buf[:], 0); err != nil {
 		return config{}, false
 	}
 
-	// Find end of JSON (first null byte or end of buffer)
-	n := 0
-	for n < len(buf) && buf[n] != 0 {
-		n++
+	if binary.LittleEndian.Uint32(buf[0:4]) != configMagic {
+		return config{}, false
 	}
-	if n == 0 {
+	storedCRC := binary.LittleEndian.Uint32(buf[4:8])
+
+	// Parse payload starting at offset 8
+	b := buf[8:]
+	if len(b) < 1 {
+		return config{}, false
+	}
+	ssidLen := int(b[0])
+	b = b[1:]
+	if ssidLen == 0 || ssidLen > len(b) {
+		return config{}, false
+	}
+	ssid := string(b[:ssidLen])
+	b = b[ssidLen:]
+
+	if len(b) < 1 {
+		return config{}, false
+	}
+	passLen := int(b[0])
+	b = b[1:]
+	if passLen > len(b) {
+		return config{}, false
+	}
+	pass := string(b[:passLen])
+
+	// CRC covers everything after the 8-byte header
+	payloadEnd := 8 + 1 + ssidLen + 1 + passLen
+	if crc32.ChecksumIEEE(buf[8:payloadEnd]) != storedCRC {
 		return config{}, false
 	}
 
-	var block configBlock
-	if err := json.Unmarshal(buf[:n], &block); err != nil {
-		return config{}, false
-	}
-
-	if block.Magic != configMagic {
-		return config{}, false
-	}
-
-	// Verify CRC over the payload JSON
-	payloadBytes, _ := json.Marshal(block.Payload)
-	if crc32.ChecksumIEEE(payloadBytes) != block.CRC {
-		return config{}, false
-	}
-
-	if block.Payload.SSID == "" {
-		return config{}, false
-	}
-
-	return block.Payload, true
+	return config{SSID: ssid, Pass: pass}, true
 }
 
 // saveConfig writes the config to flash.
 func saveConfig(cfg config) error {
-	payloadBytes, err := json.Marshal(cfg)
-	if err != nil {
-		return err
-	}
+	var buf [configSize]byte
 
-	block := configBlock{
-		Magic:   configMagic,
-		CRC:     crc32.ChecksumIEEE(payloadBytes),
-		Payload: cfg,
-	}
+	// Header
+	binary.LittleEndian.PutUint32(buf[0:4], configMagic)
+	// CRC placeholder at buf[4:8]
 
-	data, err := json.Marshal(block)
-	if err != nil {
-		return err
-	}
+	// Payload
+	i := 8
+	buf[i] = byte(len(cfg.SSID))
+	i++
+	i += copy(buf[i:], cfg.SSID)
+	buf[i] = byte(len(cfg.Pass))
+	i++
+	i += copy(buf[i:], cfg.Pass)
 
-	// Erase the sector
+	// CRC over payload
+	binary.LittleEndian.PutUint32(buf[4:8], crc32.ChecksumIEEE(buf[8:i]))
+
 	if err := machine.Flash.EraseBlocks(0, 1); err != nil {
 		return err
 	}
-
-	// Write
-	// Pad to write block size (256 bytes)
-	var buf [configSize]byte
-	copy(buf[:], data)
-	_, err = machine.Flash.WriteAt(buf[:256], 0)
+	_, err := machine.Flash.WriteAt(buf[:], 0)
 	return err
 }
 

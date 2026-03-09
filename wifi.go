@@ -100,7 +100,7 @@ func (d *Device) startJoin(cfg Config) error {
 	var ssidBuf [36]byte
 	binary.LittleEndian.PutUint32(ssidBuf[:4], uint32(len(cfg.SSID)))
 	copy(ssidBuf[4:], cfg.SSID)
-	return d.doIoctl(ioctlSET, wlcSetSSID, 0, ssidBuf[:4+len(cfg.SSID)])
+	return d.doIoctl(ioctlSET, wlcSetSSID, 0, ssidBuf[:])
 }
 
 // startAP configures the chip as an access point and starts beaconing.
