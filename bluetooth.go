@@ -19,7 +19,7 @@ var (
 // btInit powers up the BT processor, uploads firmware, and initializes
 // the HCI ring buffers. Must be called after WiFi firmware is loaded
 // and the WLAN core is running.
-func (d *Device) btInit(firmware string) error {
+func (d *Device) btInit(firmware []byte) error {
 	// Power up BT processor
 	if err := d.bp_write32(cywBTBaseAddress+bt2wlanPwrupAddr, bt2wlanPwrupWake); err != nil {
 		return err
@@ -57,7 +57,7 @@ func (d *Device) btInit(firmware string) error {
 
 // btUploadFirmware parses the Intel HEX format BT firmware and writes
 // it to the BT processor memory via backplane.
-func (d *Device) btUploadFirmware(firmware string) error {
+func (d *Device) btUploadFirmware(firmware []byte) error {
 	// Skip version string: 1-byte length + version + 1 padding byte
 	if len(firmware) < 3 {
 		return errFirmware
@@ -363,7 +363,7 @@ type btHexFileData struct {
 
 // btReadFirmwarePatchLine reads one firmware patch line and returns the
 // number of data bytes and the remaining firmware string.
-func btReadFirmwarePatchLine(fw string, hfd *btHexFileData) (uint32, string) {
+func btReadFirmwarePatchLine(fw []byte, hfd *btHexFileData) (uint32, []byte) {
 	var absBaseAddr32 uint32
 	for {
 		if len(fw) < 4 {

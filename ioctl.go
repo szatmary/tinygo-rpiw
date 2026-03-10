@@ -231,7 +231,6 @@ func (d *Device) handleControl(payload []byte) error {
 	if d.ioctlPending && cdc.ID == d.ioctlRespID {
 		d.ioctlPending = false
 		if cdc.Status != 0 {
-			println("  [ioctl] FAIL cmd=", cdc.Cmd, "len=", cdc.Length, "flags=", cdc.Flags, "id=", cdc.ID, "status=", cdc.Status)
 			return errIOCTL
 		}
 		dataStart := cdcHeaderSize

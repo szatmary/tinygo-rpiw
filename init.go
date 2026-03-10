@@ -4,7 +4,6 @@ import (
 	"compress/zlib"
 	"errors"
 	"io"
-	"strings"
 	"time"
 	"unsafe"
 )
@@ -20,7 +19,6 @@ func (d *Device) Init() error {
 	d.sdpcmSeqMax = 1
 	d.backplaneWindow = 0xaaaa_aaaa
 
-	println("  [init] step 1: hw ok")
 	// 2. Init bus: read test pattern (pre-config, using swapped words)
 	retries := 128
 	for {
@@ -34,7 +32,6 @@ func (d *Device) Init() error {
 		}
 	}
 
-	println("  [init] step 2: test pattern ok")
 	// 3. Test R/W register (swapped)
 	const rwTestPattern = 0x12345678
 	d.spi.write32_swapped(FuncBus, spiTestRW, rwTestPattern)
@@ -56,13 +53,12 @@ func (d *Device) Init() error {
 		return errors.New("cyw43: spi post-config rw test failed")
 	}
 
-	println("  [init] step 5: post-config ok")
 	// 6. Set backplane response delay
 	d.write8(FuncBus, spiRespDelayF1, busSPIBackplaneReadPaddSize)
 
 	// 7. Clear and configure interrupts
-	d.write8(FuncBus, spiIntRegister, 0x0F) // clear pending
-	d.write16(FuncBus, spiIntRegister, 0x00F6) // enable default set
+	d.write8(FuncBus, spiIntRegister, 0x0F)     // clear pending
+	d.write16(FuncBus, spiIntRegister, 0x00F6)  // enable default set
 
 	// 8. Enable ALP clock
 	d.write8(FuncBackplane, sdioChipClockCSR, sbsdioALPAvailReq)
@@ -75,7 +71,6 @@ func (d *Device) Init() error {
 	}
 	d.write8(FuncBackplane, sdioChipClockCSR, 0) // clear ALP request
 
-	println("  [init] step 8: ALP clock ok")
 	// 9. Disable cores and upload firmware
 	d.core_disable(coreWLAN)
 	d.core_disable(coreSOCSRAM)
@@ -85,11 +80,9 @@ func (d *Device) Init() error {
 	d.bp_write32(socsramBankxIndex, 3)
 	d.bp_write32(socsramBankxPDA, 0)
 
-	println("  [init] loading firmware...")
 	if err := d.bp_writezlib(0, fwWiFi); err != nil {
 		return err
 	}
-	println("  [init] firmware loaded")
 
 	// 10. Load NVRAM
 	nvramLen := (uint32(len(nvramData)) + 3) &^ 3
@@ -100,14 +93,12 @@ func (d *Device) Init() error {
 	nvramLenMagic := (^nvramLenWords << 16) | nvramLenWords
 	d.bp_write32(chipRAMSize-4, nvramLenMagic)
 
-	println("  [init] nvram loaded")
 	// 11. Start WLAN core
 	d.core_reset(coreWLAN)
 	if !d.core_is_up(coreWLAN) {
 		return errors.New("cyw43: core not up after reset")
 	}
 
-	println("  [init] wlan core up")
 	// 12. Wait for HT clock
 	deadline := time.Now().Add(100 * time.Millisecond)
 	for {
@@ -121,7 +112,6 @@ func (d *Device) Init() error {
 		time.Sleep(time.Millisecond)
 	}
 
-	println("  [init] HT clock ok")
 	// 13. Set up interrupt mask
 	d.bp_write32(sdioIntHostMask, iHMBSWMask)
 	d.write16(FuncBus, spiIntEnable, f2PacketAvailable)
@@ -159,39 +149,28 @@ func (d *Device) Init() error {
 		time.Sleep(time.Millisecond)
 	}
 
-	println("  [init] bus ready")
-
-	// 17. Init Bluetooth
-	println("  [init] loading BT firmware...")
+	// 17. Init Bluetooth — decompress directly to []byte, pass without copy
 	btFW, err := decompressZlib(fwBT)
 	if err != nil {
 		return err
 	}
-	if err := d.btInit(string(btFW)); err != nil {
+	if err := d.btInit(btFW); err != nil {
 		return err
 	}
 	d.btEnabled = true
-	println("  [init] BT ready")
 
 	// 18. Init control (CLM, country, MAC, events)
 	clmData, err := decompressZlib(fwCLM)
 	if err != nil {
 		return err
 	}
-	if err := d.initControl(string(clmData)); err != nil {
-		return err
-	}
-
-	return nil
+	return d.initControl(clmData)
 }
 
-func (d *Device) initControl(clm string) error {
-	// Load CLM
-	println("  [init] loading CLM...")
+func (d *Device) initControl(clm []byte) error {
 	if err := d.loadCLM(clm); err != nil {
 		return err
 	}
-	println("  [init] CLM loaded")
 
 	// Set country XX
 	var countryBuf [12]byte
@@ -207,14 +186,12 @@ func (d *Device) initControl(clm string) error {
 		return err
 	}
 
-	println("  [init] country set")
 	// Get MAC address
 	mac, err := d.getIovar("cur_etheraddr", 6)
 	if err != nil {
 		return err
 	}
 	copy(d.mac[:], mac[:6])
-	println("  [init] MAC address read")
 
 	// Disable TX glomming
 	if err := d.setIovarU32("bus:txglom", 0); err != nil {
@@ -258,17 +235,16 @@ func (d *Device) initControl(clm string) error {
 
 	// Disable power management so unicast packets are not missed
 	var pmBuf [4]byte
-	pmBuf[0] = 0 // PM_NONE — disable power save
+	pmBuf[0] = 0 // PM_NONE
 	d.doIoctl(ioctlSET, wlcSetPM, 0, pmBuf[:])
 
-	// Enable mDNS multicast MAC filter (01:00:5E:00:00:FB) so the chip
-	// passes mDNS packets through. Harmless if mDNS is never used.
+	// Enable mDNS multicast MAC filter (01:00:5E:00:00:FB)
 	d.AddMulticastMAC([6]byte{0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB})
 
 	return nil
 }
 
-func (d *Device) loadCLM(clm string) error {
+func (d *Device) loadCLM(clm []byte) error {
 	const chunkSize = 1024
 	// Use _iovarBuf as scratch space to avoid allocations.
 	// Layout: "clmload\0" + 12-byte header + chunk data
@@ -332,7 +308,6 @@ func (d *Device) loadCLM(clm string) error {
 	if len(resp) >= 4 {
 		status := uint32(resp[0]) | uint32(resp[1])<<8 | uint32(resp[2])<<16 | uint32(resp[3])<<24
 		if status != 0 {
-			println("  [clm] bad status=", status)
 			return errors.New("cyw43: clmload_status non-zero")
 		}
 	}
@@ -361,7 +336,7 @@ func (d *Device) setEventMask() error {
 // in 64-byte chunks. The zlib reader uses ~40KB of transient RAM for
 // the deflate window; this is freed after init completes.
 func (d *Device) bp_writezlib(addr uint32, compressed string) error {
-	r, err := zlib.NewReader(strings.NewReader(compressed))
+	r, err := zlib.NewReader(&stringReader{s: compressed})
 	if err != nil {
 		return err
 	}
@@ -387,14 +362,29 @@ func (d *Device) bp_writezlib(addr uint32, compressed string) error {
 }
 
 // decompressZlib decompresses zlib data to a byte slice.
-// Only used for small payloads (CLM ~1KB, BT firmware ~6KB).
+// Used for CLM (~7KB) and BT firmware (~10KB) during init.
 func decompressZlib(compressed string) ([]byte, error) {
-	r, err := zlib.NewReader(strings.NewReader(compressed))
+	r, err := zlib.NewReader(&stringReader{s: compressed})
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
 	return io.ReadAll(r)
+}
+
+// stringReader implements io.Reader over a string without importing "strings".
+type stringReader struct {
+	s string
+	i int
+}
+
+func (r *stringReader) Read(b []byte) (int, error) {
+	if r.i >= len(r.s) {
+		return 0, io.EOF
+	}
+	n := copy(b, r.s[r.i:])
+	r.i += n
+	return n, nil
 }
 
 const nvramData = "manfid=0x2d0\x00" +
