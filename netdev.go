@@ -257,9 +257,16 @@ func (nd *NetDev) Listen(sockfd int, backlog int) error {
 }
 
 func (nd *NetDev) Accept(sockfd int) (int, netip.AddrPort, error) {
-	nd.mu.Lock()
-	defer nd.mu.Unlock()
-	return nd.stack.Accept(sockfd, 30*time.Second)
+	// Lock briefly on each check so run() can poll between checks.
+	for {
+		nd.mu.Lock()
+		fd, addr, err := nd.stack.TryAccept(sockfd)
+		nd.mu.Unlock()
+		if err != stack.ErrTimeout {
+			return fd, addr, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (nd *NetDev) Send(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {

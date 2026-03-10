@@ -127,6 +127,26 @@ func (s *Stack) Accept(fd int, timeout time.Duration) (int, netip.AddrPort, erro
 	return -1, netip.AddrPort{}, errTimeout
 }
 
+// TryAccept checks for a pending connection without polling or blocking.
+// Returns errTimeout immediately if no connection is pending.
+func (s *Stack) TryAccept(fd int) (int, netip.AddrPort, error) {
+	sock, err := s.getSocket(fd)
+	if err != nil {
+		return -1, netip.AddrPort{}, err
+	}
+	if sock.state != sockListening {
+		return -1, netip.AddrPort{}, errBadSocket
+	}
+	if sock.pendingConn < 0 {
+		return -1, netip.AddrPort{}, errTimeout
+	}
+	newFD := sock.pendingConn
+	sock.pendingConn = -1
+	newSock := &s.sockets[newFD]
+	remote := netip.AddrPortFrom(newSock.remoteAddr, newSock.remotePort)
+	return newFD, remote, nil
+}
+
 // Send writes data to a connected socket.
 func (s *Stack) Send(fd int, data []byte, deadline time.Time) (int, error) {
 	sock, err := s.getSocket(fd)

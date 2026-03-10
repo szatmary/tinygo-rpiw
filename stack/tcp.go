@@ -53,7 +53,8 @@ func (s *Stack) handleTCP(srcIP, _ netip.Addr, payload []byte) {
 	sock := s.findTCPSocket(srcIP, srcPort, dstPort)
 	if sock == nil {
 		// Check for listening socket
-		sock = s.findListeningSocket(dstPort)
+		var listenerFD int
+		sock, listenerFD = s.findListeningSocket(dstPort)
 		if sock == nil {
 			if flags&tcpRST == 0 {
 				s.sendTCPReset(srcIP, srcPort, dstPort, seqNum, ackNum, flags)
@@ -61,7 +62,7 @@ func (s *Stack) handleTCP(srcIP, _ netip.Addr, payload []byte) {
 			return
 		}
 		if flags&tcpSYN != 0 {
-			s.handleSYNOnListener(sock, srcIP, srcPort, dstPort, seqNum, mss)
+			s.handleSYNOnListener(sock, listenerFD, srcIP, srcPort, dstPort, seqNum, mss)
 		}
 		return
 	}
@@ -157,6 +158,9 @@ func (s *Stack) tcpInput(sock *Socket,
 		if flags&tcpACK != 0 {
 			tcp.state = tcpEstablished
 			sock.state = sockConnected
+			if sock.listenerFD >= 0 {
+				s.sockets[sock.listenerFD].pendingConn = sock.selfFD
+			}
 		}
 		if flags&tcpRST != 0 {
 			tcp.state = tcpClosed
@@ -372,7 +376,7 @@ func (s *Stack) sendTCPReset(dstIP netip.Addr, dstPort, srcPort uint16, seqNum, 
 }
 
 // handleSYNOnListener handles incoming SYN on a listening socket.
-func (s *Stack) handleSYNOnListener(listener *Socket, srcIP netip.Addr, srcPort, dstPort uint16, seqNum uint32, mss uint16) {
+func (s *Stack) handleSYNOnListener(listener *Socket, listenerFD int, srcIP netip.Addr, srcPort, dstPort uint16, seqNum uint32, mss uint16) {
 	fd, err := s.allocSocket()
 	if err != nil {
 		s.sendTCPReset(srcIP, srcPort, dstPort, seqNum, 0, tcpSYN)
@@ -386,6 +390,8 @@ func (s *Stack) handleSYNOnListener(listener *Socket, srcIP netip.Addr, srcPort,
 	sock.localAddr = s.localIP
 	sock.remotePort = srcPort
 	sock.remoteAddr = srcIP
+	sock.listenerFD = listenerFD
+	sock.selfFD = fd
 
 	sock.tcp.state = tcpSynReceived
 	sock.tcp.ackNum = seqNum + 1
@@ -395,8 +401,7 @@ func (s *Stack) handleSYNOnListener(listener *Socket, srcIP netip.Addr, srcPort,
 	sock.tcp.mss = mss
 
 	s.sendTCPFlags(sock, tcpSYN|tcpACK)
-
-	listener.pendingConn = fd
+	// pendingConn is set when the ACK arrives and the handshake completes.
 }
 
 // findTCPSocket finds a connected TCP socket matching the given tuple.
@@ -414,14 +419,14 @@ func (s *Stack) findTCPSocket(remoteIP netip.Addr, remotePort, localPort uint16)
 }
 
 // findListeningSocket finds a listening socket on the given port.
-func (s *Stack) findListeningSocket(localPort uint16) *Socket {
+func (s *Stack) findListeningSocket(localPort uint16) (*Socket, int) {
 	for i := range s.sockets {
 		sock := &s.sockets[i]
 		if sock.state == sockListening && sock.localPort == localPort {
-			return sock
+			return sock, i
 		}
 	}
-	return nil
+	return nil, -1
 }
 
 // parseMSSOption extracts MSS from TCP options.

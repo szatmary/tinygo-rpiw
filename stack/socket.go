@@ -48,6 +48,10 @@ type Socket struct {
 
 	// For listening sockets: pending connection
 	pendingConn int // socket fd of accepted connection, -1 if none
+
+	// For server-side connections: fds linking this socket to its listener
+	listenerFD int // fd of the listener (-1 if not a server connection)
+	selfFD     int // this socket's own fd (set at alloc time for server sockets)
 }
 
 type tcpState struct {
@@ -214,6 +218,8 @@ func (s *Socket) reset() {
 	s.txTail = 0
 	s.tcp = tcpState{}
 	s.pendingConn = -1
+	s.listenerFD = -1
+	s.selfFD = -1
 }
 
 // allocSocket finds and allocates a free socket, returns its index.
